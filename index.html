@@ -1,0 +1,1274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Age of War: FFA Multiplayer</title>
+    
+    <!-- Firebase Imports -->
+    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore-compat.js"></script>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <style>
+        body { margin: 0; overflow: hidden; background: #222; color: white; font-family: 'Segoe UI', sans-serif; user-select: none; }
+        canvas { display: block; touch-action: none; }
+        
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #333; }
+        ::-webkit-scrollbar-thumb { background: #555; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #777; }
+
+        .game-ui { position: absolute; pointer-events: none; width: 100%; height: 100%; top: 0; left: 0; }
+        .pointer-events-auto { pointer-events: auto; }
+        
+        .unit-card { transition: all 0.1s; background: rgba(0,0,0,0.8); border: 2px solid #444; }
+        .unit-card:hover { border-color: #fff; transform: translateY(-2px); }
+        .unit-card:active { transform: translateY(0); }
+        .unit-card.disabled { opacity: 0.5; cursor: not-allowed; filter: grayscale(1); }
+
+        .btn-primary { background: #eab308; color: #000; font-weight: bold; padding: 8px 16px; border-radius: 4px; transition: 0.2s; }
+        .btn-primary:hover { background: #facc15; }
+        .btn-danger { background: #ef4444; color: #fff; font-weight: bold; padding: 8px 16px; border-radius: 4px; }
+        
+        .tooltip { display: none; position: absolute; background: rgba(0,0,0,0.9); border: 1px solid #666; padding: 12px; border-radius: 6px; font-size: 14px; z-index: 100; pointer-events: none; width: 260px; text-align: left; }
+        .unit-card:hover .tooltip { display: block; bottom: 110%; left: 50%; transform: translateX(-50%); }
+
+        #lobby-screen { background: url('data:image/svg+xml;utf8,<svg width="100" height="100" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><g fill="%23333"><path d="M0 0h50v50H0zM50 50h50v50H50z"/></g></svg>'); }
+        
+        .glass-panel { background: rgba(20, 20, 20, 0.85); backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 4px 30px rgba(0,0,0,0.5); }
+        
+        /* Queue items scaled up */
+        .queue-item { width: 45px; height: 45px; border: 1px solid #666; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; font-size: 24px; position: relative; }
+        .queue-progress { position: absolute; bottom: 0; left: 0; height: 3px; background: #0f0; transition: width 0.1s linear; }
+    </style>
+</head>
+<body>
+
+<!-- === INITIALIZATION & DATA === -->
+<script>
+    // --- Configuration ---
+    // SPEED: All units move at speed 1.0 (approx ~50px/sec in simulation space)
+    const STANDARD_SPEED = 1.0; 
+    
+    // Stats sourced from Age of War 1 Wiki / Game Data
+    const GAME_DATA = {
+        ages: [
+            {
+                name: "Stone Age",
+                xpReq: 0,
+                baseHp: 5000,
+                special: { name: "Meteor Strike", damage: 200, radius: 100, cooldown: 60 },
+                units: [
+                    { id: 'u1_1', name: "Club Man", icon: "🪨", cost: 15, delay: 1.0, hp: 55, meleeDmg: 16, rangedDmg: 0, meleeRange: 20, rangedRange: 0 },
+                    { id: 'u1_2', name: "Slingshot Man", icon: "🧶", cost: 25, delay: 1.0, hp: 42, meleeDmg: 10, rangedDmg: 8, meleeRange: 20, rangedRange: 100 },
+                    { id: 'u1_3', name: "Dino Rider", icon: "🦖", cost: 100, delay: 3.0, hp: 160, meleeDmg: 40, rangedDmg: 0, meleeRange: 45, rangedRange: 0 }
+                ],
+                turret: { id: 't1', name: "Rock Catapult", icon: "🪵", cost: 100, damage: 25, range: 200, cooldown: 80 }
+            },
+            {
+                name: "Medieval Age",
+                xpReq: 1000,
+                baseHp: 5000,
+                special: { name: "Arrow Rain", damage: 400, radius: 120, cooldown: 70 },
+                units: [
+                    { id: 'u2_1', name: "Sword Man", icon: "⚔️", cost: 50, delay: 2.0, hp: 100, meleeDmg: 32, rangedDmg: 0, meleeRange: 20, rangedRange: 0 },
+                    { id: 'u2_2', name: "Archer", icon: "🏹", cost: 75, delay: 1.0, hp: 80, meleeDmg: 20, rangedDmg: 9, meleeRange: 20, rangedRange: 130 },
+                    { id: 'u2_3', name: "Knight", icon: "🐴", cost: 500, delay: 3.0, hp: 300, meleeDmg: 60, rangedDmg: 0, meleeRange: 60, rangedRange: 0 }
+                ],
+                turret: { id: 't2', name: "Ballista", icon: "🏹", cost: 400, damage: 50, range: 250, cooldown: 70 }
+            },
+            {
+                name: "Renaissance",
+                xpReq: 4000,
+                baseHp: 5000,
+                special: { name: "Artillery Strike", damage: 800, radius: 150, cooldown: 80 },
+                units: [
+                    { id: 'u3_1', name: "Duelist", icon: "🗡️", cost: 200, delay: 3.0, hp: 200, meleeDmg: 79, rangedDmg: 0, meleeRange: 25, rangedRange: 0 },
+                    { id: 'u3_2', name: "Musketeer", icon: "🔫", cost: 400, delay: 3.0, hp: 160, meleeDmg: 40, rangedDmg: 20, meleeRange: 25, rangedRange: 130 },
+                    { id: 'u3_3', name: "Cannoneer", icon: "💣", cost: 1000, delay: 5.0, hp: 600, meleeDmg: 120, rangedDmg: 0, meleeRange: 25, rangedRange: 0 }
+                ],
+                turret: { id: 't3', name: "Cannon Turret", icon: "💣", cost: 1000, damage: 120, range: 300, cooldown: 120 }
+            },
+            {
+                name: "Modern Age",
+                xpReq: 16000,
+                baseHp: 5000,
+                special: { name: "Airstrike", damage: 1500, radius: 180, cooldown: 90 },
+                units: [
+                    { id: 'u4_1', name: "Melee Infantry", icon: "🎖️", cost: 1500, delay: 3.0, hp: 300, meleeDmg: 100, rangedDmg: 0, meleeRange: 25, rangedRange: 0 },
+                    { id: 'u4_2', name: "Machine Gunner", icon: "🔫", cost: 2000, delay: 3.0, hp: 350, meleeDmg: 60, rangedDmg: 30, meleeRange: 25, rangedRange: 130 }, 
+                    { id: 'u4_3', name: "Tank", icon: "🚜", cost: 7000, delay: 8.0, hp: 1200, meleeDmg: 300, rangedDmg: 0, meleeRange: 100, rangedRange: 0 }
+                ],
+                turret: { id: 't4', name: "Machine Gun", icon: "🔫", cost: 4000, damage: 50, range: 350, cooldown: 10 }
+            },
+            {
+                name: "Future Age",
+                xpReq: 60000,
+                baseHp: 5000,
+                special: { name: "Ion Cannon", damage: 6000, radius: 250, cooldown: 120 },
+                units: [
+                    { id: 'u5_1', name: "Alien Blade", icon: "👽", cost: 5000, delay: 3.0, hp: 1000, meleeDmg: 250, rangedDmg: 0, meleeRange: 40, rangedRange: 0 },
+                    { id: 'u5_2', name: "Alien Blaster", icon: "⚡", cost: 6000, delay: 3.0, hp: 800, meleeDmg: 130, rangedDmg: 80, meleeRange: 40, rangedRange: 130 },
+                    { id: 'u5_3', name: "War Machine", icon: "👹", cost: 20000, delay: 8.0, hp: 3000, meleeDmg: 600, rangedDmg: 0, meleeRange: 100, rangedRange: 0 },
+                    { id: 'u5_4', name: "Super Soldier", icon: "🦸", cost: 150000, delay: 3.0, hp: 4000, meleeDmg: 400, rangedDmg: 400, meleeRange: 40, rangedRange: 150 }
+                ],
+                turret: { id: 't5', name: "Laser Battery", icon: "⚡", cost: 15000, damage: 800, range: 450, cooldown: 60 }
+            }
+        ],
+        turretSlots: 2,
+        mapRadius: 1000,
+        baseRadius: 90, 
+        unitCollisionRadius: 20 // Adjusted to 20 (Diameter 40)
+    };
+    
+    // Globals
+    let db, auth, user;
+    let appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app';
+    let lobbyId = null;
+    let isHost = false;
+    let localPlayerId = null;
+    let gameLoopRef = null;
+    let gameState = null;
+    let canvas, ctx;
+    let camera = { x: 0, y: 0, zoom: 0.8 };
+    let input = { keys: {}, mouse: { x: 0, y: 0, down: false }, targetId: null, mode: 'select' }; 
+    
+    const getLobbyRef = () => db.collection('artifacts').doc(appId).collection('public').doc('data').collection('lobbies');
+
+    async function initApp() {
+        const firebaseConfig = {
+			apiKey: "AIzaSyAcn7ZymxXYPTOhayD1DU2IOAQA7J7Ltrg",
+			authDomain: "ageofffa.firebaseapp.com",
+			projectId: "ageofffa",
+			storageBucket: "ageofffa.firebasestorage.app",
+			messagingSenderId: "461491837298",
+			appId: "1:461491837298:web:daebae2fb46fe3eb3ee5eb"
+		};
+        if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
+        db = firebase.firestore();
+        auth = firebase.auth();
+
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+            await auth.signInWithCustomToken(__initial_auth_token);
+        } else {
+            await auth.signInAnonymously();
+        }
+
+        auth.onAuthStateChanged(u => {
+            user = u;
+            if (user) {
+                localPlayerId = user.uid;
+                document.getElementById('auth-status').innerText = "Connected";
+                document.getElementById('auth-status').classList.add('text-green-500');
+                showScreen('lobby-screen');
+            }
+        });
+    }
+
+    function showScreen(id) {
+        document.querySelectorAll('.screen').forEach(s => s.classList.add('hidden'));
+        document.getElementById(id).classList.remove('hidden');
+    }
+
+    // --- Lobby Logic ---
+    async function createLobby() {
+        const name = document.getElementById('lobby-name').value || "New Game";
+        const lobbyRef = getLobbyRef().doc();
+        lobbyId = lobbyRef.id;
+        
+        const initialPlayer = createPlayerObj(localPlayerId, "Player 1", false);
+        
+        await lobbyRef.set({
+            hostId: localPlayerId,
+            name: name,
+            status: 'waiting',
+            players: [initialPlayer],
+            createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+            stateJSON: JSON.stringify({ units: [], projectiles: [], effects: [] }),
+            actions: []
+        });
+
+        enterLobbyUI(lobbyId, true);
+    }
+
+    async function joinLobby() {
+        const id = document.getElementById('lobby-id-input').value.trim();
+        if(!id) return alert("Enter Lobby ID");
+        
+        const lobbyRef = getLobbyRef().doc(id);
+        const doc = await lobbyRef.get();
+        
+        if(!doc.exists) return alert("Lobby not found");
+        if(doc.data().status !== 'waiting') return alert("Game already started");
+
+        const newPlayer = createPlayerObj(localPlayerId, "Player " + (doc.data().players.length + 1), false);
+        
+        await db.runTransaction(async (t) => {
+            const fresh = await t.get(lobbyRef);
+            const players = fresh.data().players;
+            if (players.find(p => p.id === localPlayerId)) return; 
+            players.push(newPlayer);
+            t.update(lobbyRef, { players: players });
+        });
+
+        lobbyId = id;
+        enterLobbyUI(lobbyId, false);
+    }
+
+    function createPlayerObj(id, name, isBot) {
+        return {
+            id: id,
+            name: name,
+            isBot: isBot,
+            age: 0,
+            xp: 0,
+            gold: 300,
+            hp: GAME_DATA.ages[0].baseHp,
+            maxHp: GAME_DATA.ages[0].baseHp,
+            turrets: [], 
+            targetId: null, 
+            color: `hsl(${Math.random() * 360}, 70%, 50%)`,
+            spawnQueue: [], // Array of { unitId, delay, maxDelay }
+            spawnTimer: 0, // Timer for the CURRENT unit in queue
+            specialCooldown: 0
+        };
+    }
+
+    let lobbyUnsub;
+    function enterLobbyUI(id, host) {
+        isHost = host;
+        showScreen('waiting-room');
+        document.getElementById('display-lobby-id').innerText = id;
+        if(!host) document.getElementById('start-btn').classList.add('hidden');
+        if(!host) document.getElementById('add-bot-btn').classList.add('hidden');
+
+        lobbyUnsub = getLobbyRef().doc(id).onSnapshot(doc => {
+            if(!doc.exists) return;
+            const data = doc.data();
+            
+            const list = document.getElementById('player-list');
+            list.innerHTML = data.players.map(p => `
+                <div class="flex items-center justify-between bg-gray-700 p-2 rounded mb-1">
+                    <div class="flex items-center gap-2">
+                        <div class="w-3 h-3 rounded-full" style="background:${p.color}"></div>
+                        <span>${p.name} ${p.isBot ? '(BOT)' : ''}</span>
+                    </div>
+                    ${p.id === localPlayerId ? '<span class="text-xs bg-blue-600 px-1 rounded">YOU</span>' : ''}
+                </div>
+            `).join('');
+
+            if(data.status === 'playing') {
+                startGame(data);
+            } else if (data.status === 'finished') {
+                if (gameState !== 'finished') {
+                    gameState = 'finished';
+                    const amIWinner = data.winner?.id === localPlayerId;
+                    const resultText = amIWinner ? "VICTORY!" : "DEFEAT";
+                    const resultColor = amIWinner ? "text-yellow-400" : "text-red-500";
+                    
+                    const overlay = document.createElement('div');
+                    overlay.className = "absolute inset-0 bg-black bg-opacity-80 flex flex-col items-center justify-center z-50 pointer-events-auto";
+                    overlay.innerHTML = `
+                        <h1 class="text-6xl font-bold ${resultColor} mb-4">${resultText}</h1>
+                        <p class="text-2xl text-white mb-8">Winner: ${data.winner?.name || 'Unknown'}</p>
+                        <button onclick="location.reload()" class="btn-primary">Back to Menu</button>
+                    `;
+                    document.body.appendChild(overlay);
+                }
+            }
+        });
+    }
+
+    async function addBot() {
+        if(!isHost) return;
+        const lobbyRef = getLobbyRef().doc(lobbyId);
+        const doc = await lobbyRef.get();
+        const players = doc.data().players;
+        if(players.length >= 10) return alert("Lobby full");
+        
+        const bot = createPlayerObj('bot_' + Date.now(), "Bot " + Math.floor(Math.random()*100), true);
+        players.push(bot);
+        await lobbyRef.update({ players });
+    }
+
+    async function setGameStarted() {
+        if(!isHost) return;
+        await getLobbyRef().doc(lobbyId).update({ status: 'playing' });
+    }
+
+    // --- Game Logic ---
+
+    let simState = {
+        players: [],
+        units: [], 
+        projectiles: [], 
+        effects: [] 
+    };
+    
+    function startGame(initialData) {
+        if(lobbyUnsub) lobbyUnsub();
+        showScreen('game-screen');
+        
+        canvas = document.getElementById('game-canvas');
+        ctx = canvas.getContext('2d');
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas);
+
+        simState.players = initialData.players;
+        
+        const radius = GAME_DATA.mapRadius * 0.8;
+        const center = { x: 0, y: 0 };
+        const angleStep = (Math.PI * 2) / simState.players.length;
+        
+        simState.players.forEach((p, i) => {
+            const angle = angleStep * i;
+            p.x = center.x + Math.cos(angle) * radius;
+            p.y = center.y + Math.sin(angle) * radius;
+            const ageData = GAME_DATA.ages[p.age];
+            if(ageData && ageData.turret) {
+                 p.turrets = [{ id: 'base_turret', typeId: ageData.turret.id, cooldown: 0, slot: 0 }];
+            }
+        });
+
+        // Input Setup (Standard + Camera)
+        let isDragging = false;
+        let lastPos = { x: 0, y: 0 };
+        const getPos = (e) => {
+            if (e.changedTouches) return { x: e.changedTouches[0].clientX, y: e.changedTouches[0].clientY };
+            if (e.touches && e.touches.length > 0) return { x: e.touches[0].clientX, y: e.touches[0].clientY };
+            return { x: e.clientX, y: e.clientY };
+        };
+        const onDown = (e) => {
+            isDragging = false;
+            const p = getPos(e);
+            input.mouse.down = true;
+            input.mouse.x = p.x;
+            input.mouse.y = p.y;
+            lastPos = p;
+        };
+        const onMove = (e) => {
+            e.preventDefault(); 
+            const p = getPos(e);
+            input.mouse.x = p.x;
+            input.mouse.y = p.y;
+            if (input.mouse.down) {
+                const dx = p.x - lastPos.x;
+                const dy = p.y - lastPos.y;
+                if (Math.abs(dx) > 2 || Math.abs(dy) > 2) isDragging = true;
+                if (isDragging) {
+                    camera.x -= dx / camera.zoom;
+                    camera.y -= dy / camera.zoom;
+                    lastPos = p;
+                }
+            }
+        };
+        const onUp = (e) => {
+            input.mouse.down = false;
+            if (!isDragging) handleInput();
+            isDragging = false;
+        };
+
+        canvas.addEventListener('mousedown', onDown);
+        canvas.addEventListener('mousemove', onMove);
+        canvas.addEventListener('mouseup', onUp);
+        canvas.addEventListener('touchstart', onDown, {passive: false});
+        canvas.addEventListener('touchmove', onMove, {passive: false});
+        canvas.addEventListener('touchend', onUp);
+        canvas.addEventListener('wheel', e => {
+            e.preventDefault();
+            camera.zoom *= (1 - e.deltaY * 0.001);
+            camera.zoom = Math.max(0.2, Math.min(camera.zoom, 2.5));
+        });
+        canvas.addEventListener('contextmenu', e => {
+            e.preventDefault();
+            input.mode = 'select';
+            document.body.style.cursor = 'default';
+        });
+
+        const me = simState.players.find(p => p.id === localPlayerId);
+        if (me) {
+            camera.x = me.x;
+            camera.y = me.y;
+        }
+
+        if(isHost) {
+            requestAnimationFrame(hostGameLoop);
+            setInterval(hostSync, 200); 
+        } else {
+            getLobbyRef().doc(lobbyId).onSnapshot(doc => {
+                const d = doc.data();
+                if(d.stateJSON) {
+                    const parsed = JSON.parse(d.stateJSON);
+                    // Sync players, specifically for Queue and Gold updates
+                    simState.players = d.players; 
+                    simState.units = parsed.units;
+                    simState.projectiles = parsed.projectiles;
+                    simState.effects = parsed.effects;
+                }
+            });
+            requestAnimationFrame(clientRenderLoop);
+        }
+
+        updateUI();
+    }
+
+    // --- Host Simulation ---
+    let lastTime = performance.now();
+    
+    function hostGameLoop(time) {
+        if (gameState === 'finished') return; // Stop logic on win
+
+        const dt = (time - lastTime) / 1000;
+        lastTime = time;
+
+        getLobbyRef().doc(lobbyId).collection('requests').get().then(snap => {
+            snap.forEach(doc => {
+                const req = doc.data();
+                processAction(req);
+                doc.ref.delete();
+            });
+        });
+
+        // Player Updates
+        simState.players.forEach(p => {
+            // FIX: If player is dead, clear queue and skip logic
+            if (p.hp <= 0) {
+                p.spawnQueue = [];
+                return;
+            }
+
+            if (p.isBot) runBotLogic(p, dt);
+            
+            // Ability Cooldown
+            if (p.specialCooldown > 0) p.specialCooldown -= dt;
+
+            // Spawn Queue Logic
+            if (p.spawnQueue.length > 0) {
+                p.spawnTimer -= dt;
+                if (p.spawnTimer <= 0) {
+                    // Ready to spawn
+                    const unitId = p.spawnQueue.shift();
+                    spawnUnitReal(p.id, unitId);
+                    
+                    // Reset timer for next unit
+                    if (p.spawnQueue.length > 0) {
+                        const nextId = p.spawnQueue[0];
+                        const stats = getUnitStats(p.age, nextId);
+                        p.spawnTimer = stats ? stats.delay : 1.0;
+                    } else {
+                        p.spawnTimer = 0;
+                    }
+                }
+            }
+        });
+
+        simState.units = simState.units.filter(u => u.hp > 0);
+        simState.units.forEach(u => updateUnit(u, dt));
+
+        simState.players.forEach(p => {
+            if (p.hp > 0) updateTurrets(p, dt);
+        });
+
+        simState.projectiles = simState.projectiles.filter(p => {
+            p.x += p.vx * dt * 400; 
+            p.y += p.vy * dt * 400;
+            
+            let hit = false;
+            const targets = simState.units.filter(u => u.ownerId !== p.ownerId);
+            for (let t of targets) {
+                if (dist(p.x, p.y, t.x, t.y) < GAME_DATA.unitCollisionRadius + 5) {
+                    t.hp -= p.damage;
+                    hit = true;
+                    simState.effects.push({x: t.x, y: t.y, type: 'hit', timer: 0.5});
+                    if (t.hp <= 0) awardKill(p.ownerId, t);
+                    break;
+                }
+            }
+            
+            if (!hit) {
+                simState.players.forEach(pl => {
+                    if (pl.id !== p.ownerId && pl.hp > 0 && dist(p.x, p.y, pl.x, pl.y) < GAME_DATA.baseRadius) {
+                        pl.hp -= p.damage;
+                        hit = true;
+                        if (pl.hp <= 0) pl.hp = 0; 
+                    }
+                });
+            }
+
+            return !hit && Math.abs(p.x) < 2000 && Math.abs(p.y) < 2000; 
+        });
+
+        simState.effects = simState.effects.filter(e => {
+            e.timer -= dt;
+            return e.timer > 0;
+        });
+        
+        // Win Condition Safe Check
+        const alivePlayers = simState.players.filter(p => p.hp > 0);
+        if (alivePlayers.length === 1 && simState.players.length > 1) {
+            const winner = alivePlayers[0];
+            gameState = 'finished'; // Stop host loop
+            try {
+                getLobbyRef().doc(lobbyId).update({
+                    status: 'finished',
+                    winner: { id: winner.id, name: winner.name }
+                });
+            } catch(e) { console.error("Win update error", e); }
+            return;
+        }
+
+        renderGame();
+        updateUI();
+
+        requestAnimationFrame(hostGameLoop);
+    }
+
+    function hostSync() {
+        if(gameState === 'finished') return;
+        
+        const stateJSON = JSON.stringify({
+            units: simState.units.map(u => ({
+                id: u.id, ownerId: u.ownerId, typeId: u.typeId, 
+                x: Math.round(u.x), y: Math.round(u.y), 
+                hp: u.hp, maxHp: u.maxHp, icon: u.icon
+            })),
+            projectiles: simState.projectiles,
+            effects: simState.effects
+        });
+
+        getLobbyRef().doc(lobbyId).update({
+            players: simState.players,
+            stateJSON: stateJSON
+        });
+    }
+
+    // --- Simulation Helpers ---
+
+    function getUnitStats(ageIdx, unitId) {
+        // Search all ages because queue might contain units from previous ages after evolving
+        for (const age of GAME_DATA.ages) {
+            const u = age.units.find(x => x.id === unitId);
+            if (u) return u;
+        }
+        return null;
+    }
+
+    function runBotLogic(bot, dt) {
+        if (!bot.targetId || Math.random() < 0.01) {
+            const enemies = simState.players.filter(p => p.id !== bot.id && p.hp > 0);
+            if (enemies.length > 0) {
+                bot.targetId = enemies[Math.floor(Math.random() * enemies.length)].id;
+            }
+        }
+
+        // Evolution
+        const nextAge = GAME_DATA.ages[bot.age + 1];
+        if (nextAge && bot.xp >= nextAge.xpReq) {
+             bot.age++;
+             bot.hp = Math.min(bot.hp + 500, GAME_DATA.ages[bot.age].baseHp);
+             bot.maxHp = GAME_DATA.ages[bot.age].baseHp;
+             bot.turrets = [{ id: 'base_turret', typeId: GAME_DATA.ages[bot.age].turret.id, cooldown: 0, slot: 0 }];
+        }
+
+        // Add to Queue (Simulate clicks)
+        const ageData = GAME_DATA.ages[bot.age];
+        if (bot.spawnQueue.length < 3 && Math.random() < 0.05) { // Keep queue small
+            const unitOpts = ageData.units;
+            const pick = unitOpts[Math.floor(Math.random() * unitOpts.length)];
+            if (bot.gold >= pick.cost) {
+                // Bots add directly to queue to save 'processAction' overhead for host
+                bot.gold -= pick.cost;
+                bot.spawnQueue.push(pick.id);
+                if (bot.spawnQueue.length === 1) bot.spawnTimer = pick.delay;
+            }
+        }
+        
+        // Use Ability
+        if (bot.specialCooldown <= 0 && ageData.special && bot.targetId) {
+             const t = simState.players.find(p => p.id === bot.targetId);
+             if (t) {
+                 useSpecial(bot.id, t.x, t.y);
+             }
+        }
+    }
+
+    function updateUnit(u, dt) {
+        const owner = simState.players.find(p => p.id === u.ownerId);
+        const targetPlayer = simState.players.find(p => p.id === u.targetId);
+        const unitRadius = GAME_DATA.unitCollisionRadius;
+        
+        if(u.cooldownTimer > 0) u.cooldownTimer -= dt * 60;
+
+        if (!targetPlayer || targetPlayer.hp <= 0) {
+            // Find closest alive
+            let close = null;
+            let minDist = Infinity;
+            simState.players.forEach(p => {
+                if (p.id !== u.ownerId && p.hp > 0) {
+                    const d = dist(u.x, u.y, p.x, p.y);
+                    if (d < minDist) { minDist = d; close = p; }
+                }
+            });
+            if (close) {
+                u.targetId = close.id; 
+            }
+            return;
+        }
+
+        // COMBAT LOGIC
+        let enemy = null;
+        let enemyDist = Infinity;
+        
+        // 1. Scan units
+        for (let other of simState.units) {
+            if (other.ownerId !== u.ownerId) {
+                const d = dist(u.x, u.y, other.x, other.y);
+                const combinedRadii = unitRadius * 2;
+                
+                // SURFACE DISTANCE CHECK: Range + Radii
+                // Note: Use < to exclude exactly Range 0 touching scenarios if needed, 
+                // but standard convention is <=
+                const maxRange = Math.max(u.meleeRange, u.rangedRange);
+                
+                // Only consider this enemy if it's within "reach" (Distance < Range + Body Sizes)
+                if (d <= maxRange + combinedRadii && d < enemyDist) {
+                    enemyDist = d;
+                    enemy = other;
+                }
+            }
+        }
+        
+        // 2. Scan Base
+        if (!enemy) {
+             const d = dist(u.x, u.y, targetPlayer.x, targetPlayer.y);
+             const baseRadius = GAME_DATA.baseRadius;
+             const maxRange = Math.max(u.meleeRange, u.rangedRange);
+             
+             // SURFACE DISTANCE CHECK
+             if (d <= maxRange + unitRadius + baseRadius) {
+                 enemy = { type: 'base', x: targetPlayer.x, y: targetPlayer.y, id: targetPlayer.id, radius: baseRadius };
+                 enemyDist = d;
+             }
+        }
+
+        if (enemy) {
+            const enemyRadius = enemy.type === 'base' ? GAME_DATA.baseRadius : unitRadius;
+            
+            // Re-calculate checks for specific attacks using Surface Distance
+            const isMeleeRange = enemyDist <= u.meleeRange + unitRadius + enemyRadius;
+            const isRangedRange = u.rangedDmg > 0 && enemyDist <= u.rangedRange + unitRadius + enemyRadius;
+
+            if (u.cooldownTimer <= 0) {
+                if (isMeleeRange && u.meleeDmg > 0) {
+                    // MELEE ATTACK
+                    if (enemy.type === 'base') {
+                        const p = simState.players.find(pl => pl.id === enemy.id);
+                        if(p) p.hp -= u.meleeDmg;
+                    } else {
+                        enemy.hp -= u.meleeDmg;
+                        if(enemy.hp <= 0) awardKill(u.ownerId, enemy);
+                    }
+                    simState.effects.push({x: enemy.x, y: enemy.y, type: 'hit', timer: 0.2});
+                    u.cooldownTimer = 60; 
+                } else if (isRangedRange) {
+                    // RANGED ATTACK
+                    simState.projectiles.push({
+                        x: u.x, y: u.y, 
+                        vx: (enemy.x - u.x) / dist(u.x, u.y, enemy.x, enemy.y),
+                        vy: (enemy.y - u.y) / dist(u.x, u.y, enemy.x, enemy.y),
+                        damage: u.rangedDmg,
+                        ownerId: u.ownerId
+                    });
+                    u.cooldownTimer = 60;
+                } else {
+                    // In sight but out of specific attack range? Move.
+                    moveUnit(u, targetPlayer, dt);
+                }
+            }
+        } else {
+            moveUnit(u, targetPlayer, dt);
+        }
+    }
+
+    function moveUnit(u, targetPlayer, dt) {
+        // Collision queueing
+        let canMove = true;
+        const step = STANDARD_SPEED * dt * 50; 
+        const angle = Math.atan2(targetPlayer.y - u.y, targetPlayer.x - u.x);
+        const nextX = u.x + Math.cos(angle) * step;
+        const nextY = u.y + Math.sin(angle) * step;
+
+        for (let other of simState.units) {
+            if (other.id !== u.id) {
+                const d = dist(nextX, nextY, other.x, other.y);
+                if (d < GAME_DATA.unitCollisionRadius * 2) {
+                    const dx = other.x - u.x;
+                    const dy = other.y - u.y;
+                    const dot = dx * Math.cos(angle) + dy * Math.sin(angle);
+                    if (dot > 0) {
+                        canMove = false;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (canMove) {
+            u.x = nextX;
+            u.y = nextY;
+        }
+    }
+
+    function updateTurrets(p, dt) {
+        p.turrets.forEach(t => {
+            const tData = getTurretData(t.typeId);
+            if (!tData) return;
+            
+            if (t.cooldown > 0) t.cooldown -= dt * 60;
+            
+            if (t.cooldown <= 0) {
+                let target = null;
+                let minD = tData.range;
+                for (let u of simState.units) {
+                    if (u.ownerId !== p.id) {
+                        const d = dist(p.x, p.y, u.x, u.y);
+                        if (d < minD) { minD = d; target = u; }
+                    }
+                }
+                
+                if (target) {
+                    simState.projectiles.push({
+                        x: p.x, y: p.y,
+                        vx: (target.x - p.x) / dist(p.x, p.y, target.x, target.y),
+                        vy: (target.y - p.y) / dist(p.x, p.y, target.x, target.y),
+                        damage: tData.damage,
+                        ownerId: p.id
+                    });
+                    t.cooldown = tData.cooldown;
+                }
+            }
+        });
+    }
+
+    // Called when timer hits 0
+    function spawnUnitReal(playerId, unitId) {
+        const p = simState.players.find(x => x.id === playerId);
+        const stats = getUnitStats(p.age, unitId);
+        
+        let spawnX = p.x;
+        let spawnY = p.y;
+        
+        if (p.targetId) {
+            const target = simState.players.find(tp => tp.id === p.targetId);
+            if (target) {
+                const a = Math.atan2(target.y - p.y, target.x - p.x);
+                spawnX += Math.cos(a) * (GAME_DATA.baseRadius + 20);
+                spawnY += Math.sin(a) * (GAME_DATA.baseRadius + 20);
+            }
+        } else {
+             spawnX += 70; 
+        }
+
+        simState.units.push({
+            id: Math.random().toString(36),
+            ownerId: p.id,
+            typeId: unitId,
+            x: spawnX,
+            y: spawnY,
+            hp: stats.hp,
+            maxHp: stats.hp,
+            meleeDmg: stats.meleeDmg,
+            rangedDmg: stats.rangedDmg,
+            meleeRange: stats.meleeRange,
+            rangedRange: stats.rangedRange,
+            cooldownTimer: 0,
+            targetId: p.targetId,
+            icon: stats.icon,
+            // Store cost for reward calc
+            cost: stats.cost
+        });
+    }
+
+    function useSpecial(playerId, x, y) {
+        const p = simState.players.find(x => x.id === playerId);
+        const age = GAME_DATA.ages[p.age];
+        if(!age.special) return;
+        
+        if (p.specialCooldown > 0) return; // Cooldown check
+
+        p.specialCooldown = age.special.cooldown; // Set cooldown
+        
+        simState.effects.push({x, y, type: 'explosion', radius: age.special.radius, timer: 1.0});
+        
+        simState.units.forEach(u => {
+            if (u.ownerId !== playerId && dist(u.x, u.y, x, y) < age.special.radius) {
+                u.hp -= age.special.damage;
+                if(u.hp <= 0) awardKill(playerId, u);
+            }
+        });
+    }
+
+    function awardKill(killerId, victimUnit) {
+        const killer = simState.players.find(p => p.id === killerId);
+        if (killer && victimUnit.cost) {
+            // 130% Cost as Gold, 100% Cost as XP
+            killer.gold += Math.ceil(victimUnit.cost * 1.3);
+            killer.xp += Math.floor(victimUnit.cost * 1.0);
+        }
+    }
+
+    function processAction(action) {
+        if (action.type === 'queueUnit') {
+            const p = simState.players.find(x => x.id === action.playerId);
+            if (p && p.hp > 0) {
+                 const stats = getUnitStats(p.age, action.unitId);
+                 if (stats && p.gold >= stats.cost) {
+                     p.gold -= stats.cost;
+                     p.spawnQueue.push(action.unitId);
+                     // If it's the first unit, start timer immediately
+                     if (p.spawnQueue.length === 1) {
+                         p.spawnTimer = stats.delay;
+                     }
+                 }
+            }
+        } else if (action.type === 'setTarget') {
+            const p = simState.players.find(x => x.id === action.playerId);
+            if (p) p.targetId = action.targetId;
+        } else if (action.type === 'upgrade') {
+            const p = simState.players.find(x => x.id === action.playerId);
+            if (p) {
+                const nextAge = GAME_DATA.ages[p.age + 1];
+                if (nextAge && p.xp >= nextAge.xpReq) {
+                    p.age++;
+                    p.hp += 500;
+                    p.maxHp = GAME_DATA.ages[p.age].baseHp;
+                    p.turrets = [{ id: 'base_turret', typeId: GAME_DATA.ages[p.age].turret.id, cooldown: 0, slot: 0 }];
+                }
+            }
+        } else if (action.type === 'special') {
+             useSpecial(action.playerId, action.x, action.y);
+        }
+    }
+
+    // --- Client Interaction ---
+    
+    function sendAction(data) {
+        if (isHost) {
+            processAction({ ...data, playerId: localPlayerId });
+        } else {
+            getLobbyRef().doc(lobbyId).collection('requests').add({
+                ...data,
+                playerId: localPlayerId,
+                timestamp: firebase.firestore.FieldValue.serverTimestamp()
+            });
+        }
+    }
+
+    function handleInput() {
+        const rect = canvas.getBoundingClientRect();
+        const mx = (input.mouse.x - rect.left - canvas.width/2) / camera.zoom + camera.x;
+        const my = (input.mouse.y - rect.top - canvas.height/2) / camera.zoom + camera.y;
+
+        if (input.mode === 'ability') {
+            sendAction({ type: 'special', x: mx, y: my });
+            input.mode = 'select';
+            document.body.style.cursor = 'default';
+            return;
+        }
+
+        let clickedBase = null;
+        simState.players.forEach(p => {
+            if (dist(mx, my, p.x, p.y) < GAME_DATA.baseRadius) {
+                clickedBase = p;
+            }
+        });
+
+        if (clickedBase && clickedBase.id !== localPlayerId) {
+            sendAction({ type: 'setTarget', targetId: clickedBase.id });
+        }
+    }
+
+    // --- Rendering ---
+
+    function clientRenderLoop() {
+        renderGame();
+        updateUI();
+        if (gameState !== 'finished') requestAnimationFrame(clientRenderLoop);
+    }
+
+    function renderGame() {
+        ctx.fillStyle = '#1a1a1a'; 
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        ctx.strokeStyle = '#333';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        const gridSize = 100;
+        
+        ctx.save();
+        ctx.translate(canvas.width/2, canvas.height/2);
+        ctx.scale(camera.zoom, camera.zoom);
+        ctx.translate(-camera.x, -camera.y);
+
+        ctx.strokeStyle = '#444';
+        ctx.lineWidth = 5;
+        ctx.beginPath();
+        ctx.arc(0, 0, GAME_DATA.mapRadius, 0, Math.PI * 2);
+        ctx.stroke();
+
+        simState.players.forEach(p => {
+            if (p.hp <= 0) {
+                 ctx.fillStyle = '#222';
+                 ctx.beginPath(); ctx.arc(p.x, p.y, GAME_DATA.baseRadius, 0, Math.PI*2); ctx.fill();
+                 return;
+            }
+            
+            const me = simState.players.find(me => me.id === localPlayerId);
+            if (me && me.targetId === p.id) {
+                ctx.strokeStyle = '#ff0000';
+                ctx.lineWidth = 4;
+                ctx.beginPath(); ctx.arc(p.x, p.y, GAME_DATA.baseRadius + 10, 0, Math.PI*2); ctx.stroke();
+            }
+
+            ctx.fillStyle = p.color;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, GAME_DATA.baseRadius, 0, Math.PI*2);
+            ctx.fill();
+            
+            if(p.turrets.length > 0) {
+                const tur = p.turrets[0];
+                const tData = getTurretData(tur.typeId);
+                ctx.fillStyle = '#555';
+                ctx.beginPath(); ctx.arc(p.x, p.y, 30, 0, Math.PI*2); ctx.fill(); // Bigger turret mount
+                ctx.fillStyle = '#fff';
+                ctx.font = '36px Arial'; // Increased size (x1.5)
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(tData.icon, p.x, p.y);
+            }
+
+            drawBar(p.x, p.y - GAME_DATA.baseRadius - 15, 120, 12, p.hp, p.maxHp, '#0f0'); // Bigger HP bar
+            
+            ctx.fillStyle = '#fff';
+            ctx.font = '22px Arial'; // Bigger name
+            ctx.fillText(p.name, p.x, p.y - GAME_DATA.baseRadius - 40);
+        });
+
+        simState.units.forEach(u => {
+            const p = simState.players.find(pl => pl.id === u.ownerId);
+            const color = p ? p.color : '#fff';
+            
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.arc(u.x, u.y, 28, 0, Math.PI*2); // x2 Unit Size
+            ctx.fill();
+            
+            ctx.font = '44px Arial'; // x2 Icon Size
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(u.icon, u.x, u.y);
+
+            drawBar(u.x, u.y - 48, 48, 8, u.hp, u.maxHp, '#0f0'); // Moved bar up
+        });
+
+        simState.projectiles.forEach(p => {
+            ctx.fillStyle = '#ffff00';
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 8, 0, Math.PI*2); // Bigger projectiles
+            ctx.fill();
+        });
+        
+        simState.effects.forEach(e => {
+            if (e.type === 'hit') {
+                ctx.fillStyle = `rgba(255, 255, 255, ${e.timer * 2})`;
+                ctx.beginPath(); ctx.arc(e.x, e.y, 20, 0, Math.PI*2); ctx.fill(); // Bigger hit
+            } else if (e.type === 'explosion') {
+                ctx.fillStyle = `rgba(255, 100, 0, ${e.timer})`;
+                ctx.beginPath(); ctx.arc(e.x, e.y, e.radius, 0, Math.PI*2); ctx.fill();
+            }
+        });
+
+        if (input.mode === 'ability') {
+            const me = simState.players.find(x => x.id === localPlayerId);
+            const age = GAME_DATA.ages[me.age];
+            if(age && age.special) {
+                const rect = canvas.getBoundingClientRect();
+                const wx = (input.mouse.x - canvas.width/2) / camera.zoom + camera.x;
+                const wy = (input.mouse.y - canvas.height/2) / camera.zoom + camera.y;
+
+                ctx.strokeStyle = 'rgba(255, 0, 0, 0.5)';
+                ctx.fillStyle = 'rgba(255, 0, 0, 0.2)';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(wx, wy, age.special.radius, 0, Math.PI*2);
+                ctx.stroke();
+                ctx.fill();
+            }
+        }
+
+        ctx.restore();
+    }
+
+    function drawBar(x, y, w, h, val, max, color) {
+        ctx.fillStyle = '#000';
+        ctx.fillRect(x - w/2, y, w, h);
+        ctx.fillStyle = color;
+        const fill = Math.max(0, (val / max) * w);
+        ctx.fillRect(x - w/2, y, fill, h);
+    }
+
+    // --- UI Updates ---
+    
+    let currentRenderedAge = -1;
+
+    function updateUI() {
+        const p = simState.players.find(x => x.id === localPlayerId);
+        if (!p) return;
+
+        const ageIndex = p.age;
+        const ageData = GAME_DATA.ages[ageIndex];
+        const nextAge = GAME_DATA.ages[ageIndex + 1];
+
+        document.getElementById('stats-gold').innerText = Math.floor(p.gold);
+        document.getElementById('stats-xp').innerText = Math.floor(p.xp);
+        
+        // --- QUEUE UI ---
+        const queueDiv = document.getElementById('queue-bar');
+        if (p.spawnQueue && p.spawnQueue.length > 0) {
+            queueDiv.classList.remove('hidden');
+            queueDiv.innerHTML = p.spawnQueue.map((uid, idx) => {
+                const uStats = getUnitStats(p.age, uid);
+                if (!uStats) return '';
+                
+                // First item shows progress
+                let progressHtml = '';
+                if (idx === 0) {
+                    const pct = ((uStats.delay - p.spawnTimer) / uStats.delay) * 100;
+                    progressHtml = `<div class="queue-progress" style="width: ${pct}%"></div>`;
+                }
+                
+                return `<div class="queue-item">${uStats.icon}${progressHtml}</div>`;
+            }).join('');
+        } else {
+            queueDiv.classList.add('hidden');
+            queueDiv.innerHTML = '';
+        }
+
+
+        // --- Unit Bar Construction ---
+        const unitContainer = document.getElementById('unit-bar');
+        
+        if (currentRenderedAge !== ageIndex) {
+            currentRenderedAge = ageIndex;
+            
+            // INCREASED UI SIZE: w-24 h-24 (was 16), text-5xl (was 3xl)
+            unitContainer.innerHTML = ageData.units.map(u => `
+                <div id="btn-unit-${u.id}" class="unit-card relative w-24 h-24 rounded cursor-pointer flex flex-col items-center justify-center" 
+                     onclick="sendAction({type: 'queueUnit', unitId: '${u.id}'})">
+                    <span class="text-5xl pointer-events-none">${u.icon}</span> 
+                    <span class="text-base text-yellow-400 font-bold pointer-events-none">$${u.cost}</span>
+                    <div class="tooltip pointer-events-none">
+                        <b class="text-yellow-400 text-xl">${u.name}</b><br/>
+                        <div class="grid grid-cols-2 gap-2 mt-1">
+                            <span>❤️ HP: ${u.hp}</span>
+                            <span>⏱️ Train: ${u.delay}s</span>
+                            <span>⚔️ Melee: ${u.meleeDmg} (${u.meleeRange})</span>
+                            <span>🏹 Range: ${u.rangedDmg} (${u.rangedRange})</span>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+
+            const specialBtn = document.getElementById('special-btn');
+            if (ageData.special) {
+                // INCREASED UI SIZE for Special Button
+                specialBtn.innerHTML = `<span class="pointer-events-none text-4xl">⭐</span><span class="text-sm pointer-events-none">${ageData.special.name}</span><div id="special-cd-overlay" class="absolute inset-0 bg-black bg-opacity-70 flex items-center justify-center text-white font-bold hidden text-2xl"></div>`;
+                specialBtn.onclick = () => {
+                    input.mode = 'ability';
+                    document.body.style.cursor = 'crosshair';
+                };
+                specialBtn.classList.remove('opacity-50', 'cursor-not-allowed', 'bg-gray-800');
+                specialBtn.classList.add('bg-purple-900', 'border-purple-500', 'hover:bg-purple-800');
+            } else {
+                specialBtn.innerHTML = 'Locked';
+                specialBtn.onclick = null;
+                specialBtn.classList.add('opacity-50', 'cursor-not-allowed', 'bg-gray-800');
+                specialBtn.classList.remove('bg-purple-900', 'border-purple-500', 'hover:bg-purple-800');
+            }
+        }
+
+        // --- States ---
+        
+        // Cooldown UI
+        const cdOverlay = document.getElementById('special-cd-overlay');
+        const specialBtn = document.getElementById('special-btn');
+        if (p.specialCooldown > 0 && cdOverlay) {
+             cdOverlay.classList.remove('hidden');
+             cdOverlay.innerText = Math.ceil(p.specialCooldown);
+             specialBtn.onclick = null; // Disable click
+             specialBtn.classList.add('cursor-not-allowed');
+        } else if (cdOverlay) {
+             cdOverlay.classList.add('hidden');
+             specialBtn.onclick = () => { input.mode = 'ability'; document.body.style.cursor = 'crosshair'; };
+             specialBtn.classList.remove('cursor-not-allowed');
+        }
+
+        // Unit Buttons
+        ageData.units.forEach(u => {
+            const btn = document.getElementById(`btn-unit-${u.id}`);
+            if (btn) {
+                if (p.gold < u.cost) {
+                    btn.classList.add('disabled');
+                } else {
+                    btn.classList.remove('disabled');
+                }
+            }
+        });
+
+        const upgradeBtn = document.getElementById('upgrade-btn');
+        if (nextAge) {
+            upgradeBtn.classList.remove('hidden');
+            const canAfford = p.xp >= nextAge.xpReq;
+            
+            if (canAfford) {
+                upgradeBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+                upgradeBtn.onclick = () => { sendAction({type: 'upgrade'}); };
+            } else {
+                upgradeBtn.classList.add('opacity-50', 'cursor-not-allowed');
+                upgradeBtn.onclick = null;
+            }
+            upgradeBtn.innerHTML = `Evolve to ${nextAge.name}<br/><span class="text-xs">${nextAge.xpReq} XP</span>`;
+        } else {
+            upgradeBtn.classList.add('hidden');
+        }
+        
+        const targetStatus = document.getElementById('target-status');
+        if (p.targetId) {
+            const t = simState.players.find(x => x.id === p.targetId);
+            targetStatus.innerText = `Target: ${t ? t.name : 'Unknown'}`;
+            targetStatus.classList.remove('text-red-400', 'animate-pulse');
+            targetStatus.classList.add('text-white');
+        } else {
+            targetStatus.innerText = "Click a Base to Set Target!";
+            targetStatus.classList.add('text-red-400', 'animate-pulse');
+            targetStatus.classList.remove('text-white');
+        }
+    }
+
+    function resizeCanvas() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+    }
+    
+    function dist(x1, y1, x2, y2) {
+        return Math.sqrt((x2-x1)**2 + (y2-y1)**2);
+    }
+    
+    function getTurretData(tid) {
+        for(let a of GAME_DATA.ages) {
+            if (a.turret && a.turret.id === tid) return a.turret;
+        }
+        return null;
+    }
+
+    initApp();
+
+</script>
+
+<!-- === UI LAYOUT === -->
+<div id="lobby-screen" class="screen w-full h-full flex flex-col items-center justify-center">
+    <div class="glass-panel p-8 rounded-xl max-w-md w-full text-center">
+        <h1 class="text-5xl font-bold mb-6 text-yellow-500">Age of War: FFA</h1>
+        <p class="mb-4 text-gray-300 text-xl">Multiplayer Strategy Game</p>
+        
+        <div id="auth-status" class="mb-6 text-base text-yellow-500 animate-pulse">Connecting...</div>
+
+        <div class="flex flex-col gap-4">
+            <input id="lobby-name" type="text" placeholder="Your Name" class="bg-gray-800 border border-gray-600 p-4 rounded text-white text-xl" value="Commander">
+            <button onclick="createLobby()" class="btn-primary w-full py-4 text-xl">Create New Game</button>
+            
+            <div class="flex gap-2 mt-4">
+                <input id="lobby-id-input" type="text" placeholder="Paste Lobby ID" class="bg-gray-800 border border-gray-600 p-3 rounded flex-1 text-white text-base">
+                <button onclick="joinLobby()" class="bg-blue-600 hover:bg-blue-500 text-white px-6 rounded font-bold text-lg">Join</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="waiting-room" class="screen hidden w-full h-full flex flex-col items-center justify-center bg-gray-900">
+    <div class="glass-panel p-8 rounded-xl max-w-lg w-full">
+        <h2 class="text-3xl font-bold mb-4">Lobby</h2>
+        <div class="bg-black p-4 rounded mb-6 text-base font-mono text-gray-400 break-all select-all cursor-pointer" onclick="document.execCommand('copy')">
+            ID: <span id="display-lobby-id"></span> (Click to Copy)
+        </div>
+        
+        <div class="mb-6">
+            <h3 class="text-lg text-gray-400 mb-2">Players</h3>
+            <div id="player-list" class="max-h-60 overflow-y-auto text-lg"></div>
+        </div>
+
+        <div class="flex gap-4">
+            <button id="add-bot-btn" onclick="addBot()" class="bg-gray-600 hover:bg-gray-500 text-white px-6 py-3 rounded flex-1 text-lg">Add Bot</button>
+            <button id="start-btn" onclick="setGameStarted()" class="btn-primary flex-1 text-lg">Start Game</button>
+        </div>
+        <p class="mt-4 text-sm text-center text-gray-500">Waiting for host to start...</p>
+    </div>
+</div>
+
+<div id="game-screen" class="screen hidden w-full h-full">
+    <canvas id="game-canvas"></canvas>
+
+    <!-- HUD -->
+    <div class="game-ui flex flex-col justify-between p-6">
+        <!-- Top Bar -->
+        <div class="flex justify-between items-start pointer-events-auto">
+            <div class="glass-panel p-4 rounded flex gap-6 text-base">
+                <div class="flex flex-col">
+                    <span class="text-yellow-400 font-bold text-lg">GOLD</span>
+                    <span id="stats-gold" class="text-3xl">0</span>
+                </div>
+                <div class="flex flex-col border-l border-gray-600 pl-6">
+                    <span class="text-blue-400 font-bold text-lg">XP</span>
+                    <span id="stats-xp" class="text-3xl">0</span>
+                </div>
+            </div>
+            
+            <div id="target-status" class="glass-panel px-6 py-3 rounded font-bold text-red-400 animate-pulse text-xl">
+                Select Target
+            </div>
+            
+            <div class="glass-panel p-3 rounded">
+                <button id="upgrade-btn" class="btn-primary text-lg hidden p-4">Evolve</button>
+            </div>
+        </div>
+
+        <!-- Bottom Bar -->
+        <div class="flex flex-col items-center gap-4 pointer-events-auto pb-6">
+            <!-- Queue Display -->
+            <div id="queue-bar" class="flex gap-2 mb-2 hidden">
+                <!-- Items injected here -->
+            </div>
+
+            <!-- Controls -->
+            <div class="flex items-end gap-6">
+                <!-- Special -->
+                <button id="special-btn" class="relative w-24 h-24 rounded bg-purple-900 border-2 border-purple-500 hover:bg-purple-800 flex flex-col items-center justify-center transition overflow-hidden">
+                    Locked
+                </button>
+
+                <!-- Units -->
+                <div id="unit-bar" class="flex gap-4 glass-panel p-4 rounded-xl">
+                    <!-- Injected via JS -->
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+</body>
+</html>
