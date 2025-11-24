@@ -178,7 +178,6 @@
 
     // --- Lobby Logic ---
     async function createLobby() {
-        // Fix 1: Carry over name to lobby/player creation
         const lobbyNameVal = document.getElementById('lobby-name').value || "New Game";
         const playerNameVal = document.getElementById('lobby-name').value || "Player 1";
         
@@ -202,7 +201,6 @@
 
     async function joinLobby() {
         const id = document.getElementById('lobby-id-input').value.trim();
-        // Fix 1: Carry over name from the main input
         const playerNameVal = document.getElementById('lobby-name').value || "Player";
 
         if(!id) return alert("Enter Lobby ID");
@@ -358,7 +356,7 @@
             }
         });
 
-        // Input Setup (Standard + Camera)
+        // Input Setup
         let isDragging = false;
         let lastPos = { x: 0, y: 0 };
         const getPos = (e) => {
@@ -408,7 +406,6 @@
             camera.zoom = Math.max(0.2, Math.min(camera.zoom, 2.5));
         });
         
-        // Fix 4: Right Click Cancellation - moved to Window to catch clicks over UI too
         window.addEventListener('contextmenu', e => {
             e.preventDefault();
             if (input.mode === 'ability') {
@@ -424,6 +421,8 @@
         }
 
         if(isHost) {
+            // HOST LOGIC UPDATE: Use a robust requestAnimationFrame with Accumulator for background throttling safety
+            // AND a fail-safe setInterval to ensure updates happen even if RAF stops completely
             requestAnimationFrame(hostGameLoop);
             setInterval(hostSync, 200); 
         } else {
@@ -431,7 +430,6 @@
                 const d = doc.data();
                 if(d.stateJSON) {
                     const parsed = JSON.parse(d.stateJSON);
-                    // Sync players, specifically for Queue and Gold updates
                     simState.players = d.players; 
                     simState.units = parsed.units;
                     simState.projectiles = parsed.projectiles;
@@ -444,15 +442,41 @@
         updateUI();
     }
 
-    // --- Host Simulation ---
-    let lastTime = performance.now();
+    // --- Host Simulation (Fixed Time Step) ---
     
-    function hostGameLoop(time) {
-        if (gameState === 'finished') return; // Stop logic on win
+    // Logic runs at 30 updates per second (0.0333s)
+    const TICK_RATE = 1 / 30; 
+    let lastTime = performance.now();
+    let accumulator = 0;
 
-        const dt = (time - lastTime) / 1000;
+    function hostGameLoop(time) {
+        if (gameState === 'finished') return;
+
+        // Calculate time since last frame
+        let deltaTime = (time - lastTime) / 1000;
         lastTime = time;
 
+        // Safety cap: If tab was backgrounded, deltaTime might be huge (e.g., 5 seconds).
+        // Cap it to 0.25s to avoid a "spiral of death" or massive physics jumps.
+        // This means the game slows down in the background but doesn't break physics.
+        if (deltaTime > 0.25) deltaTime = 0.25;
+
+        accumulator += deltaTime;
+
+        // Consume accumulator in fixed-size chunks
+        while (accumulator >= TICK_RATE) {
+            updateHostLogic(TICK_RATE);
+            accumulator -= TICK_RATE;
+        }
+
+        renderGame();
+        updateUI();
+
+        requestAnimationFrame(hostGameLoop);
+    }
+
+    function updateHostLogic(dt) {
+        // Process Requests
         getLobbyRef().doc(lobbyId).collection('requests').get().then(snap => {
             snap.forEach(doc => {
                 const req = doc.data();
@@ -463,7 +487,6 @@
 
         // Player Updates
         simState.players.forEach(p => {
-            // FIX: If player is dead, clear queue and skip logic
             if (p.hp <= 0) {
                 p.spawnQueue = [];
                 return;
@@ -478,11 +501,9 @@
             if (p.spawnQueue.length > 0) {
                 p.spawnTimer -= dt;
                 if (p.spawnTimer <= 0) {
-                    // Ready to spawn
                     const unitId = p.spawnQueue.shift();
                     spawnUnitReal(p.id, unitId);
                     
-                    // Reset timer for next unit
                     if (p.spawnQueue.length > 0) {
                         const nextId = p.spawnQueue[0];
                         const stats = getUnitStats(p.age, nextId);
@@ -539,20 +560,14 @@
         const alivePlayers = simState.players.filter(p => p.hp > 0);
         if (alivePlayers.length === 1 && simState.players.length > 1) {
             const winner = alivePlayers[0];
-            gameState = 'finished'; // Stop host loop
+            gameState = 'finished';
             try {
                 getLobbyRef().doc(lobbyId).update({
                     status: 'finished',
                     winner: { id: winner.id, name: winner.name }
                 });
             } catch(e) { console.error("Win update error", e); }
-            return;
         }
-
-        renderGame();
-        updateUI();
-
-        requestAnimationFrame(hostGameLoop);
     }
 
     function hostSync() {
@@ -608,7 +623,6 @@
             const unitOpts = ageData.units;
             const pick = unitOpts[Math.floor(Math.random() * unitOpts.length)];
             if (bot.gold >= pick.cost) {
-                // Bots add directly to queue to save 'processAction' overhead for host
                 bot.gold -= pick.cost;
                 bot.spawnQueue.push(pick.id);
                 if (bot.spawnQueue.length === 1) bot.spawnTimer = pick.delay;
@@ -632,7 +646,6 @@
         if(u.cooldownTimer > 0) u.cooldownTimer -= dt * 60;
 
         if (!targetPlayer || targetPlayer.hp <= 0) {
-            // Find closest alive
             let close = null;
             let minDist = Infinity;
             simState.players.forEach(p => {
@@ -651,18 +664,12 @@
         let enemy = null;
         let enemyDist = Infinity;
         
-        // 1. Scan units
         for (let other of simState.units) {
             if (other.ownerId !== u.ownerId) {
                 const d = dist(u.x, u.y, other.x, other.y);
                 const combinedRadii = unitRadius * 2;
-                
-                // SURFACE DISTANCE CHECK: Range + Radii
-                // Note: Use < to exclude exactly Range 0 touching scenarios if needed, 
-                // but standard convention is <=
                 const maxRange = Math.max(u.meleeRange, u.rangedRange);
                 
-                // Only consider this enemy if it's within "reach" (Distance < Range + Body Sizes)
                 if (d <= maxRange + combinedRadii && d < enemyDist) {
                     enemyDist = d;
                     enemy = other;
@@ -670,13 +677,11 @@
             }
         }
         
-        // 2. Scan Base
         if (!enemy) {
              const d = dist(u.x, u.y, targetPlayer.x, targetPlayer.y);
              const baseRadius = GAME_DATA.baseRadius;
              const maxRange = Math.max(u.meleeRange, u.rangedRange);
              
-             // SURFACE DISTANCE CHECK
              if (d <= maxRange + unitRadius + baseRadius) {
                  enemy = { type: 'base', x: targetPlayer.x, y: targetPlayer.y, id: targetPlayer.id, radius: baseRadius };
                  enemyDist = d;
@@ -685,14 +690,11 @@
 
         if (enemy) {
             const enemyRadius = enemy.type === 'base' ? GAME_DATA.baseRadius : unitRadius;
-            
-            // Re-calculate checks for specific attacks using Surface Distance
             const isMeleeRange = enemyDist <= u.meleeRange + unitRadius + enemyRadius;
             const isRangedRange = u.rangedDmg > 0 && enemyDist <= u.rangedRange + unitRadius + enemyRadius;
 
             if (u.cooldownTimer <= 0) {
                 if (isMeleeRange && u.meleeDmg > 0) {
-                    // MELEE ATTACK
                     if (enemy.type === 'base') {
                         const p = simState.players.find(pl => pl.id === enemy.id);
                         if(p) p.hp -= u.meleeDmg;
@@ -703,7 +705,6 @@
                     simState.effects.push({x: enemy.x, y: enemy.y, type: 'hit', timer: 0.2});
                     u.cooldownTimer = 60; 
                 } else if (isRangedRange) {
-                    // RANGED ATTACK
                     simState.projectiles.push({
                         x: u.x, y: u.y, 
                         vx: (enemy.x - u.x) / dist(u.x, u.y, enemy.x, enemy.y),
@@ -713,7 +714,6 @@
                     });
                     u.cooldownTimer = 60;
                 } else {
-                    // In sight but out of specific attack range? Move.
                     moveUnit(u, targetPlayer, dt);
                 }
             }
@@ -723,7 +723,6 @@
     }
 
     function moveUnit(u, targetPlayer, dt) {
-        // Collision queueing
         let canMove = true;
         const step = STANDARD_SPEED * dt * 50; 
         const angle = Math.atan2(targetPlayer.y - u.y, targetPlayer.x - u.x);
@@ -885,13 +884,21 @@
     // --- Client Interaction ---
     
     function sendAction(data) {
-        // Fix 3: Debounce unit buying (250ms) to prevent lag-induced double buys
+        const now = Date.now();
+        // Fix 3: Debounce + Optimistic Update
         if (data.type === 'queueUnit') {
-            const now = Date.now();
-            if (now - lastUnitBuyTime < 250) {
-                return; // Ignore rapid clicks
-            }
+            if (now - lastUnitBuyTime < 500) return; // 500ms debounce
             lastUnitBuyTime = now;
+
+            // OPTIMISTIC UPDATE:
+            // Immediately deduct gold locally and show visual feedback to prevent double-clicks
+            const p = simState.players.find(x => x.id === localPlayerId);
+            const stats = getUnitStats(p.age, data.unitId);
+            if (p && stats && p.gold >= stats.cost) {
+                p.gold -= stats.cost;
+                p.spawnQueue.push(data.unitId);
+                updateUI(); // Force immediate re-render of UI
+            }
         }
 
         if (isHost) {
