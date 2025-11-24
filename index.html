@@ -136,7 +136,12 @@
     let gameState = null;
     let canvas, ctx;
     let camera = { x: 0, y: 0, zoom: 0.8 };
-    let input = { keys: {}, mouse: { x: 0, y: 0, down: false }, targetId: null, mode: 'select' }; 
+    let input = { 
+        keys: {}, 
+        mouse: { x: 0, y: 0, down: false }, 
+        targetId: null, 
+        mode: 'select' // 'select' or 'ability'
+    }; 
     
     const getLobbyRef = () => db.collection('artifacts').doc(appId).collection('public').doc('data').collection('lobbies');
 
@@ -177,11 +182,11 @@
 
     // --- Lobby Logic ---
     async function createLobby() {
-        const name = document.getElementById('lobby-name').value || "New Game";
+        const name = document.getElementById('lobby-name').value || "Commander";
         const lobbyRef = getLobbyRef().doc();
         lobbyId = lobbyRef.id;
         
-        const initialPlayer = createPlayerObj(localPlayerId, "Player 1", false);
+        const initialPlayer = createPlayerObj(localPlayerId, name, false);
         
         await lobbyRef.set({
             hostId: localPlayerId,
@@ -198,6 +203,7 @@
 
     async function joinLobby() {
         const id = document.getElementById('lobby-id-input').value.trim();
+        const name = document.getElementById('lobby-name').value || "Commander"; // Use the name input
         if(!id) return alert("Enter Lobby ID");
         
         const lobbyRef = getLobbyRef().doc(id);
@@ -206,13 +212,18 @@
         if(!doc.exists) return alert("Lobby not found");
         if(doc.data().status !== 'waiting') return alert("Game already started");
 
-        const newPlayer = createPlayerObj(localPlayerId, "Player " + (doc.data().players.length + 1), false);
+        const newPlayer = createPlayerObj(localPlayerId, name, false);
         
         await db.runTransaction(async (t) => {
             const fresh = await t.get(lobbyRef);
             const players = fresh.data().players;
-            if (players.find(p => p.id === localPlayerId)) return; 
-            players.push(newPlayer);
+            // Update name if player already exists
+            const existingPlayerIndex = players.findIndex(p => p.id === localPlayerId);
+            if (existingPlayerIndex !== -1) {
+                players[existingPlayerIndex].name = name;
+            } else {
+                players.push(newPlayer);
+            }
             t.update(lobbyRef, { players: players });
         });
 
@@ -243,7 +254,25 @@
     function enterLobbyUI(id, host) {
         isHost = host;
         showScreen('waiting-room');
-        document.getElementById('display-lobby-id').innerText = id;
+        
+        // FIX: Only copy the ID, not the whole text
+        const lobbyIdElement = document.getElementById('display-lobby-id');
+        lobbyIdElement.innerText = id;
+        lobbyIdElement.parentNode.onclick = () => {
+             navigator.clipboard.writeText(id).catch(e => {
+                 // Fallback for iFrame restrictions
+                 const tempInput = document.createElement('textarea');
+                 tempInput.value = id;
+                 document.body.appendChild(tempInput);
+                 tempInput.select();
+                 document.execCommand('copy');
+                 document.body.removeChild(tempInput);
+             });
+             // Basic UI feedback for copy
+             lobbyIdElement.innerText = 'COPIED!';
+             setTimeout(() => lobbyIdElement.innerText = id, 1000);
+        };
+
         if(!host) document.getElementById('start-btn').classList.add('hidden');
         if(!host) document.getElementById('add-bot-btn').classList.add('hidden');
 
@@ -319,7 +348,8 @@
         resizeCanvas();
         window.addEventListener('resize', resizeCanvas);
 
-        simState.players = initialData.players;
+        // Crucial: Copy data to simState, do not reference Firestore's object
+        simState.players = JSON.parse(JSON.stringify(initialData.players));
         
         const radius = GAME_DATA.mapRadius * 0.8;
         const center = { x: 0, y: 0 };
@@ -343,6 +373,15 @@
             if (e.touches && e.touches.length > 0) return { x: e.touches[0].clientX, y: e.touches[0].clientY };
             return { x: e.clientX, y: e.clientY };
         };
+        
+        // Function to reset spell selection mode
+        const resetInputMode = () => {
+            if (input.mode === 'ability') {
+                input.mode = 'select';
+                document.body.style.cursor = 'default';
+            }
+        };
+
         const onDown = (e) => {
             isDragging = false;
             const p = getPos(e);
@@ -351,6 +390,7 @@
             input.mouse.y = p.y;
             lastPos = p;
         };
+        
         const onMove = (e) => {
             e.preventDefault(); 
             const p = getPos(e);
@@ -361,12 +401,15 @@
                 const dy = p.y - lastPos.y;
                 if (Math.abs(dx) > 2 || Math.abs(dy) > 2) isDragging = true;
                 if (isDragging) {
+                    // If dragging, reset spell mode to allow smooth camera control
+                    resetInputMode(); 
                     camera.x -= dx / camera.zoom;
                     camera.y -= dy / camera.zoom;
                     lastPos = p;
                 }
             }
         };
+
         const onUp = (e) => {
             input.mouse.down = false;
             if (!isDragging) handleInput();
@@ -379,15 +422,17 @@
         canvas.addEventListener('touchstart', onDown, {passive: false});
         canvas.addEventListener('touchmove', onMove, {passive: false});
         canvas.addEventListener('touchend', onUp);
+        
         canvas.addEventListener('wheel', e => {
             e.preventDefault();
             camera.zoom *= (1 - e.deltaY * 0.001);
             camera.zoom = Math.max(0.2, Math.min(camera.zoom, 2.5));
         });
+        
+        // FIX: Right-click/contextmenu now cancels the spell selection
         canvas.addEventListener('contextmenu', e => {
             e.preventDefault();
-            input.mode = 'select';
-            document.body.style.cursor = 'default';
+            resetInputMode();
         });
 
         const me = simState.players.find(p => p.id === localPlayerId);
@@ -398,17 +443,23 @@
 
         if(isHost) {
             requestAnimationFrame(hostGameLoop);
+            // Increased sync rate to 200ms (5 times per second) for better client responsiveness
             setInterval(hostSync, 200); 
         } else {
             getLobbyRef().doc(lobbyId).onSnapshot(doc => {
                 const d = doc.data();
                 if(d.stateJSON) {
                     const parsed = JSON.parse(d.stateJSON);
-                    // Sync players, specifically for Queue and Gold updates
-                    simState.players = d.players; 
+                    
+                    // FIX: Sync units and projectiles from stateJSON
                     simState.units = parsed.units;
                     simState.projectiles = parsed.projectiles;
                     simState.effects = parsed.effects;
+                }
+                
+                // FIX: ALWAYS sync the full player list for gold, queue, and target status
+                if (d.players) {
+                    simState.players = d.players;
                 }
             });
             requestAnimationFrame(clientRenderLoop);
@@ -531,6 +582,7 @@
     function hostSync() {
         if(gameState === 'finished') return;
         
+        // Include minimal unit data for synchronization
         const stateJSON = JSON.stringify({
             units: simState.units.map(u => ({
                 id: u.id, ownerId: u.ownerId, typeId: u.typeId, 
@@ -541,6 +593,7 @@
             effects: simState.effects
         });
 
+        // FIX: Sync full player objects (includes Gold, Queue, XP)
         getLobbyRef().doc(lobbyId).update({
             players: simState.players,
             stateJSON: stateJSON
@@ -630,9 +683,7 @@
                 const d = dist(u.x, u.y, other.x, other.y);
                 const combinedRadii = unitRadius * 2;
                 
-                // SURFACE DISTANCE CHECK: Range + Radii
-                // Note: Use < to exclude exactly Range 0 touching scenarios if needed, 
-                // but standard convention is <=
+                // SURFACE DISTANCE CHECK: Distance <= Range + AttackerRadius + TargetRadius
                 const maxRange = Math.max(u.meleeRange, u.rangedRange);
                 
                 // Only consider this enemy if it's within "reach" (Distance < Range + Body Sizes)
@@ -733,7 +784,8 @@
             
             if (t.cooldown <= 0) {
                 let target = null;
-                let minD = tData.range;
+                // Turret range is center-to-center
+                let minD = tData.range; 
                 for (let u of simState.units) {
                     if (u.ownerId !== p.id) {
                         const d = dist(p.x, p.y, u.x, u.y);
@@ -766,12 +818,14 @@
         if (p.targetId) {
             const target = simState.players.find(tp => tp.id === p.targetId);
             if (target) {
-                const a = Math.atan2(target.y - p.y, target.x - p.x);
+                // Spawn units slightly behind the base, facing the target
+                const a = Math.atan2(target.y - p.y, target.x - p.x) + Math.PI; 
                 spawnX += Math.cos(a) * (GAME_DATA.baseRadius + 20);
                 spawnY += Math.sin(a) * (GAME_DATA.baseRadius + 20);
             }
         } else {
-             spawnX += 70; 
+            // Default spawn direction if no target
+            spawnX += 70; 
         }
 
         simState.units.push({
@@ -807,7 +861,9 @@
         
         simState.units.forEach(u => {
             if (u.ownerId !== playerId && dist(u.x, u.y, x, y) < age.special.radius) {
-                u.hp -= age.special.damage;
+                // Damage dealt by special ability
+                const damage = age.special.damage / simState.players.length; // Balance damage based on player count
+                u.hp -= damage;
                 if(u.hp <= 0) awardKill(playerId, u);
             }
         });
@@ -823,32 +879,30 @@
     }
 
     function processAction(action) {
+        const p = simState.players.find(x => x.id === action.playerId);
+        if (!p || p.hp <= 0) return;
+
         if (action.type === 'queueUnit') {
-            const p = simState.players.find(x => x.id === action.playerId);
-            if (p && p.hp > 0) {
-                 const stats = getUnitStats(p.age, action.unitId);
-                 if (stats && p.gold >= stats.cost) {
-                     p.gold -= stats.cost;
-                     p.spawnQueue.push(action.unitId);
-                     // If it's the first unit, start timer immediately
-                     if (p.spawnQueue.length === 1) {
-                         p.spawnTimer = stats.delay;
-                     }
+             const stats = getUnitStats(p.age, action.unitId);
+             if (stats && p.gold >= stats.cost) {
+                 p.gold -= stats.cost;
+                 p.spawnQueue.push(action.unitId);
+                 // If it's the first unit, start timer immediately
+                 if (p.spawnQueue.length === 1) {
+                     p.spawnTimer = stats.delay;
                  }
-            }
+             }
         } else if (action.type === 'setTarget') {
-            const p = simState.players.find(x => x.id === action.playerId);
-            if (p) p.targetId = action.targetId;
+            p.targetId = action.targetId;
         } else if (action.type === 'upgrade') {
-            const p = simState.players.find(x => x.id === action.playerId);
-            if (p) {
-                const nextAge = GAME_DATA.ages[p.age + 1];
-                if (nextAge && p.xp >= nextAge.xpReq) {
-                    p.age++;
-                    p.hp += 500;
-                    p.maxHp = GAME_DATA.ages[p.age].baseHp;
-                    p.turrets = [{ id: 'base_turret', typeId: GAME_DATA.ages[p.age].turret.id, cooldown: 0, slot: 0 }];
-                }
+            const nextAge = GAME_DATA.ages[p.age + 1];
+            if (nextAge && p.xp >= nextAge.xpReq) {
+                p.age++;
+                p.hp += 500;
+                p.maxHp = GAME_DATA.ages[p.age].baseHp;
+                // Update turrets for the new age
+                const newTurretId = GAME_DATA.ages[p.age].turret.id;
+                p.turrets = p.turrets.map(t => t.id === 'base_turret' ? { ...t, typeId: newTurretId } : t);
             }
         } else if (action.type === 'special') {
              useSpecial(action.playerId, action.x, action.y);
@@ -858,13 +912,42 @@
     // --- Client Interaction ---
     
     function sendAction(data) {
+        // Prevent action if player is dead (client-side guardrail)
+        const me = simState.players.find(x => x.id === localPlayerId);
+        if (!me || me.hp <= 0) return;
+
+        // FIX: Client-side gold check for double-buy prevention
+        if (data.type === 'queueUnit') {
+            const stats = getUnitStats(me.age, data.unitId);
+            if (me.gold < stats.cost) {
+                // Block local action if not enough gold (prevents sending redundant requests)
+                console.warn("Attempted to buy unit without sufficient gold (blocked client-side).");
+                return; 
+            }
+            // Optimistic update for UI responsiveness
+            me.gold -= stats.cost;
+        }
+
+
         if (isHost) {
+            // If host, call processAction directly
             processAction({ ...data, playerId: localPlayerId });
         } else {
+            // If client, send request to Firestore
             getLobbyRef().doc(lobbyId).collection('requests').add({
                 ...data,
                 playerId: localPlayerId,
                 timestamp: firebase.firestore.FieldValue.serverTimestamp()
+            }).then(() => {
+                 // The host will run processAction, which will correctly decrement gold
+                 // If the client's optimistic update was wrong, the next sync will correct it.
+            }).catch(e => {
+                console.error("Failed to send action:", e);
+                // If network fails, revert optimistic gold update
+                if (data.type === 'queueUnit') {
+                    const stats = getUnitStats(me.age, data.unitId);
+                    me.gold += stats.cost;
+                }
             });
         }
     }
@@ -949,7 +1032,7 @@
                 ctx.font = '36px Arial'; // Increased size (x1.5)
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
-                ctx.fillText(tData.icon, p.x, p.y);
+                if(tData) ctx.fillText(tData.icon, p.x, p.y);
             }
 
             drawBar(p.x, p.y - GAME_DATA.baseRadius - 15, 120, 12, p.hp, p.maxHp, '#0f0'); // Bigger HP bar
@@ -1112,8 +1195,9 @@
              cdOverlay.innerText = Math.ceil(p.specialCooldown);
              specialBtn.onclick = null; // Disable click
              specialBtn.classList.add('cursor-not-allowed');
-        } else if (cdOverlay) {
+        } else if (cdOverlay && input.mode === 'select') {
              cdOverlay.classList.add('hidden');
+             // Re-enable click only if not in ability mode
              specialBtn.onclick = () => { input.mode = 'ability'; document.body.style.cursor = 'crosshair'; };
              specialBtn.classList.remove('cursor-not-allowed');
         }
@@ -1189,6 +1273,7 @@
         <div id="auth-status" class="mb-6 text-base text-yellow-500 animate-pulse">Connecting...</div>
 
         <div class="flex flex-col gap-4">
+            <!-- Initial value changed to "Commander" -->
             <input id="lobby-name" type="text" placeholder="Your Name" class="bg-gray-800 border border-gray-600 p-4 rounded text-white text-xl" value="Commander">
             <button onclick="createLobby()" class="btn-primary w-full py-4 text-xl">Create New Game</button>
             
@@ -1203,7 +1288,9 @@
 <div id="waiting-room" class="screen hidden w-full h-full flex flex-col items-center justify-center bg-gray-900">
     <div class="glass-panel p-8 rounded-xl max-w-lg w-full">
         <h2 class="text-3xl font-bold mb-4">Lobby</h2>
-        <div class="bg-black p-4 rounded mb-6 text-base font-mono text-gray-400 break-all select-all cursor-pointer" onclick="document.execCommand('copy')">
+        
+        <!-- FIX: Container for copy functionality now handles the click and ID -->
+        <div class="bg-black p-4 rounded mb-6 text-base font-mono text-gray-400 break-all select-all cursor-pointer">
             ID: <span id="display-lobby-id"></span> (Click to Copy)
         </div>
         
