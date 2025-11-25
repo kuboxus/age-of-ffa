@@ -139,6 +139,11 @@
     let input = { keys: {}, mouse: { x: 0, y: 0, down: false }, targetId: null, mode: 'select' }; 
     let lastUnitBuyTime = 0; // For debounce
     
+    // Smoothing Data
+    let renderState = {
+        units: new Map(), // Map<unitId, {x, y, ...targetProps}>
+    };
+    
     const getLobbyRef = () => db.collection('artifacts').doc(appId).collection('public').doc('data').collection('lobbies');
 
     async function initApp() {
@@ -192,6 +197,7 @@
             status: 'waiting',
             players: [initialPlayer],
             createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+            lastHeartbeat: firebase.firestore.FieldValue.serverTimestamp(),
             stateJSON: JSON.stringify({ units: [], projectiles: [], effects: [] }),
             actions: []
         });
@@ -267,7 +273,7 @@
                 </div>
             `).join('');
 
-            if(data.status === 'playing') {
+            if(data.status === 'playing' || data.status === 'paused') {
                 startGame(data);
             } else if (data.status === 'finished') {
                 if (gameState !== 'finished') {
@@ -421,19 +427,76 @@
         }
 
         if(isHost) {
-            // HOST LOGIC UPDATE: Use a robust requestAnimationFrame with Accumulator for background throttling safety
-            // AND a fail-safe setInterval to ensure updates happen even if RAF stops completely
+            // HOST: Handle visibility changes to pause game
+            document.addEventListener('visibilitychange', () => {
+                if (document.hidden) {
+                    getLobbyRef().doc(lobbyId).update({ status: 'paused' });
+                } else {
+                    getLobbyRef().doc(lobbyId).update({ status: 'playing' });
+                }
+            });
+
             requestAnimationFrame(hostGameLoop);
-            setInterval(hostSync, 200); 
+            setInterval(hostSync, 1000); // Sync every 1s is enough for lobby metadata, stateJSON handled separately
         } else {
             getLobbyRef().doc(lobbyId).onSnapshot(doc => {
+                if(!doc.exists) return;
                 const d = doc.data();
+                
+                // HOST CONNECTION CHECK
+                const now = Date.now();
+                const lastHeartbeat = d.lastHeartbeat ? d.lastHeartbeat.toMillis() : now;
+                const timeSinceHeartbeat = now - lastHeartbeat;
+                const connectionOverlay = document.getElementById('connection-overlay');
+                const connectionMsg = document.getElementById('connection-msg');
+                
+                // If paused explicitly OR heartbeat is stale (> 4000ms)
+                if (d.status === 'paused') {
+                    connectionOverlay.classList.remove('hidden');
+                    connectionMsg.innerText = "Host Paused the Game";
+                } else if (timeSinceHeartbeat > 4000) {
+                    connectionOverlay.classList.remove('hidden');
+                    connectionMsg.innerText = "Connection Lost / Host Left";
+                } else {
+                    connectionOverlay.classList.add('hidden');
+                }
+
                 if(d.stateJSON) {
                     const parsed = JSON.parse(d.stateJSON);
                     simState.players = d.players; 
-                    simState.units = parsed.units;
                     simState.projectiles = parsed.projectiles;
                     simState.effects = parsed.effects;
+                    
+                    // INTERPOLATION SETUP:
+                    // Instead of overwriting simState.units, update render targets
+                    parsed.units.forEach(serverUnit => {
+                        if (renderState.units.has(serverUnit.id)) {
+                            // Update existing unit target
+                            const u = renderState.units.get(serverUnit.id);
+                            u.targetX = serverUnit.x;
+                            u.targetY = serverUnit.y;
+                            u.hp = serverUnit.hp;
+                            u.maxHp = serverUnit.maxHp;
+                        } else {
+                            // New unit (snap to start)
+                            renderState.units.set(serverUnit.id, {
+                                ...serverUnit,
+                                x: serverUnit.x,
+                                y: serverUnit.y,
+                                targetX: serverUnit.x,
+                                targetY: serverUnit.y
+                            });
+                        }
+                    });
+
+                    // Remove dead units
+                    const serverIds = new Set(parsed.units.map(u => u.id));
+                    for (let [id, u] of renderState.units) {
+                        if (!serverIds.has(id)) renderState.units.delete(id);
+                    }
+                    
+                    // Fallback for logic needing "all units" array
+                    simState.units = Array.from(renderState.units.values());
                 }
             });
             requestAnimationFrame(clientRenderLoop);
@@ -444,29 +507,39 @@
 
     // --- Host Simulation (Fixed Time Step) ---
     
-    // Logic runs at 30 updates per second (0.0333s)
     const TICK_RATE = 1 / 30; 
     let lastTime = performance.now();
     let accumulator = 0;
+    let syncTimer = 0;
 
     function hostGameLoop(time) {
         if (gameState === 'finished') return;
+        
+        // Pause check (if browser didn't stop RAF entirely)
+        if (document.hidden) {
+            lastTime = time; // Prevent huge delta jump when returning
+            requestAnimationFrame(hostGameLoop);
+            return;
+        }
 
-        // Calculate time since last frame
         let deltaTime = (time - lastTime) / 1000;
         lastTime = time;
 
-        // Safety cap: If tab was backgrounded, deltaTime might be huge (e.g., 5 seconds).
-        // Cap it to 0.25s to avoid a "spiral of death" or massive physics jumps.
-        // This means the game slows down in the background but doesn't break physics.
         if (deltaTime > 0.25) deltaTime = 0.25;
 
         accumulator += deltaTime;
 
-        // Consume accumulator in fixed-size chunks
         while (accumulator >= TICK_RATE) {
             updateHostLogic(TICK_RATE);
             accumulator -= TICK_RATE;
+        }
+        
+        // Sync State to Firestore approx every 100ms (10 times/sec) for smooth updates
+        // Independent of render FPS
+        syncTimer += deltaTime;
+        if (syncTimer > 0.1) {
+            hostSyncState();
+            syncTimer = 0;
         }
 
         renderGame();
@@ -476,7 +549,6 @@
     }
 
     function updateHostLogic(dt) {
-        // Process Requests
         getLobbyRef().doc(lobbyId).collection('requests').get().then(snap => {
             snap.forEach(doc => {
                 const req = doc.data();
@@ -485,7 +557,6 @@
             });
         });
 
-        // Player Updates
         simState.players.forEach(p => {
             if (p.hp <= 0) {
                 p.spawnQueue = [];
@@ -494,10 +565,8 @@
 
             if (p.isBot) runBotLogic(p, dt);
             
-            // Ability Cooldown
             if (p.specialCooldown > 0) p.specialCooldown -= dt;
 
-            // Spawn Queue Logic
             if (p.spawnQueue.length > 0) {
                 p.spawnTimer -= dt;
                 if (p.spawnTimer <= 0) {
@@ -556,7 +625,6 @@
             return e.timer > 0;
         });
         
-        // Win Condition Safe Check
         const alivePlayers = simState.players.filter(p => p.hp > 0);
         if (alivePlayers.length === 1 && simState.players.length > 1) {
             const winner = alivePlayers[0];
@@ -570,9 +638,9 @@
         }
     }
 
-    function hostSync() {
+    // Separate High-Freq Sync for Units
+    function hostSyncState() {
         if(gameState === 'finished') return;
-        
         const stateJSON = JSON.stringify({
             units: simState.units.map(u => ({
                 id: u.id, ownerId: u.ownerId, typeId: u.typeId, 
@@ -582,17 +650,23 @@
             projectiles: simState.projectiles,
             effects: simState.effects
         });
+        getLobbyRef().doc(lobbyId).update({ 
+            stateJSON: stateJSON,
+            lastHeartbeat: firebase.firestore.FieldValue.serverTimestamp() // Heartbeat included here
+        });
+    }
 
+    // Low-Freq Sync for Players/Lobby Data (called via setInterval)
+    function hostSync() {
+        if(gameState === 'finished') return;
         getLobbyRef().doc(lobbyId).update({
-            players: simState.players,
-            stateJSON: stateJSON
+            players: simState.players
         });
     }
 
     // --- Simulation Helpers ---
 
     function getUnitStats(ageIdx, unitId) {
-        // Search all ages because queue might contain units from previous ages after evolving
         for (const age of GAME_DATA.ages) {
             const u = age.units.find(x => x.id === unitId);
             if (u) return u;
@@ -607,8 +681,6 @@
                 bot.targetId = enemies[Math.floor(Math.random() * enemies.length)].id;
             }
         }
-
-        // Evolution
         const nextAge = GAME_DATA.ages[bot.age + 1];
         if (nextAge && bot.xp >= nextAge.xpReq) {
              bot.age++;
@@ -616,10 +688,8 @@
              bot.maxHp = GAME_DATA.ages[bot.age].baseHp;
              bot.turrets = [{ id: 'base_turret', typeId: GAME_DATA.ages[bot.age].turret.id, cooldown: 0, slot: 0 }];
         }
-
-        // Add to Queue (Simulate clicks)
         const ageData = GAME_DATA.ages[bot.age];
-        if (bot.spawnQueue.length < 3 && Math.random() < 0.05) { // Keep queue small
+        if (bot.spawnQueue.length < 3 && Math.random() < 0.05) {
             const unitOpts = ageData.units;
             const pick = unitOpts[Math.floor(Math.random() * unitOpts.length)];
             if (bot.gold >= pick.cost) {
@@ -628,8 +698,6 @@
                 if (bot.spawnQueue.length === 1) bot.spawnTimer = pick.delay;
             }
         }
-        
-        // Use Ability
         if (bot.specialCooldown <= 0 && ageData.special && bot.targetId) {
              const t = simState.players.find(p => p.id === bot.targetId);
              if (t) {
@@ -660,7 +728,6 @@
             return;
         }
 
-        // COMBAT LOGIC
         let enemy = null;
         let enemyDist = Infinity;
         
@@ -781,7 +848,6 @@
         });
     }
 
-    // Called when timer hits 0
     function spawnUnitReal(playerId, unitId) {
         const p = simState.players.find(x => x.id === playerId);
         const stats = getUnitStats(p.age, unitId);
@@ -815,7 +881,6 @@
             cooldownTimer: 0,
             targetId: p.targetId,
             icon: stats.icon,
-            // Store cost for reward calc
             cost: stats.cost
         });
     }
@@ -825,9 +890,9 @@
         const age = GAME_DATA.ages[p.age];
         if(!age.special) return;
         
-        if (p.specialCooldown > 0) return; // Cooldown check
+        if (p.specialCooldown > 0) return;
 
-        p.specialCooldown = age.special.cooldown; // Set cooldown
+        p.specialCooldown = age.special.cooldown;
         
         simState.effects.push({x, y, type: 'explosion', radius: age.special.radius, timer: 1.0});
         
@@ -842,7 +907,6 @@
     function awardKill(killerId, victimUnit) {
         const killer = simState.players.find(p => p.id === killerId);
         if (killer && victimUnit.cost) {
-            // 130% Cost as Gold, 100% Cost as XP
             killer.gold += Math.ceil(victimUnit.cost * 1.3);
             killer.xp += Math.floor(victimUnit.cost * 1.0);
         }
@@ -856,7 +920,6 @@
                  if (stats && p.gold >= stats.cost) {
                      p.gold -= stats.cost;
                      p.spawnQueue.push(action.unitId);
-                     // If it's the first unit, start timer immediately
                      if (p.spawnQueue.length === 1) {
                          p.spawnTimer = stats.delay;
                      }
@@ -885,19 +948,16 @@
     
     function sendAction(data) {
         const now = Date.now();
-        // Fix 3: Debounce + Optimistic Update
         if (data.type === 'queueUnit') {
-            if (now - lastUnitBuyTime < 500) return; // 500ms debounce
+            if (now - lastUnitBuyTime < 500) return; 
             lastUnitBuyTime = now;
 
-            // OPTIMISTIC UPDATE:
-            // Immediately deduct gold locally and show visual feedback to prevent double-clicks
             const p = simState.players.find(x => x.id === localPlayerId);
             const stats = getUnitStats(p.age, data.unitId);
             if (p && stats && p.gold >= stats.cost) {
                 p.gold -= stats.cost;
                 p.spawnQueue.push(data.unitId);
-                updateUI(); // Force immediate re-render of UI
+                updateUI();
             }
         }
 
@@ -987,49 +1047,66 @@
                 const tur = p.turrets[0];
                 const tData = getTurretData(tur.typeId);
                 ctx.fillStyle = '#555';
-                ctx.beginPath(); ctx.arc(p.x, p.y, 30, 0, Math.PI*2); ctx.fill(); // Bigger turret mount
+                ctx.beginPath(); ctx.arc(p.x, p.y, 30, 0, Math.PI*2); ctx.fill(); 
                 ctx.fillStyle = '#fff';
-                ctx.font = '36px Arial'; // Increased size (x1.5)
+                ctx.font = '36px Arial'; 
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
                 ctx.fillText(tData.icon, p.x, p.y);
             }
 
-            drawBar(p.x, p.y - GAME_DATA.baseRadius - 15, 120, 12, p.hp, p.maxHp, '#0f0'); // Bigger HP bar
+            drawBar(p.x, p.y - GAME_DATA.baseRadius - 15, 120, 12, p.hp, p.maxHp, '#0f0');
             
             ctx.fillStyle = '#fff';
-            ctx.font = '22px Arial'; // Bigger name
+            ctx.font = '22px Arial';
             ctx.fillText(p.name, p.x, p.y - GAME_DATA.baseRadius - 40);
         });
 
-        simState.units.forEach(u => {
+        // DRAW SMOOTH UNITS (Interpolation)
+        // If Host, we use simState direct. If Client, use renderState
+        const unitsToDraw = isHost ? simState.units : Array.from(renderState.units.values());
+        
+        unitsToDraw.forEach(u => {
+            // Apply smoothing for Client
+            if (!isHost) {
+                // Lerp towards target
+                u.x += (u.targetX - u.x) * 0.1;
+                u.y += (u.targetY - u.y) * 0.1;
+                
+                // Snap if too far (teleport)
+                if (dist(u.x, u.y, u.targetX, u.targetY) > 50) {
+                    u.x = u.targetX;
+                    u.y = u.targetY;
+                }
+            }
+
             const p = simState.players.find(pl => pl.id === u.ownerId);
             const color = p ? p.color : '#fff';
             
             ctx.fillStyle = color;
             ctx.beginPath();
-            ctx.arc(u.x, u.y, 28, 0, Math.PI*2); // x2 Unit Size
+            ctx.arc(u.x, u.y, 28, 0, Math.PI*2);
             ctx.fill();
             
-            ctx.font = '44px Arial'; // x2 Icon Size
+            ctx.font = '44px Arial';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
             ctx.fillText(u.icon, u.x, u.y);
 
-            drawBar(u.x, u.y - 48, 48, 8, u.hp, u.maxHp, '#0f0'); // Moved bar up
+            drawBar(u.x, u.y - 48, 48, 8, u.hp, u.maxHp, '#0f0');
         });
 
         simState.projectiles.forEach(p => {
             ctx.fillStyle = '#ffff00';
             ctx.beginPath();
-            ctx.arc(p.x, p.y, 8, 0, Math.PI*2); // Bigger projectiles
+            ctx.arc(p.x, p.y, 8, 0, Math.PI*2); 
             ctx.fill();
         });
         
         simState.effects.forEach(e => {
             if (e.type === 'hit') {
                 ctx.fillStyle = `rgba(255, 255, 255, ${e.timer * 2})`;
-                ctx.beginPath(); ctx.arc(e.x, e.y, 20, 0, Math.PI*2); ctx.fill(); // Bigger hit
+                ctx.beginPath(); ctx.arc(e.x, e.y, 20, 0, Math.PI*2); ctx.fill(); 
             } else if (e.type === 'explosion') {
                 ctx.fillStyle = `rgba(255, 100, 0, ${e.timer})`;
                 ctx.beginPath(); ctx.arc(e.x, e.y, e.radius, 0, Math.PI*2); ctx.fill();
@@ -1088,7 +1165,6 @@
                 const uStats = getUnitStats(p.age, uid);
                 if (!uStats) return '';
                 
-                // First item shows progress
                 let progressHtml = '';
                 if (idx === 0) {
                     const pct = ((uStats.delay - p.spawnTimer) / uStats.delay) * 100;
@@ -1109,7 +1185,6 @@
         if (currentRenderedAge !== ageIndex) {
             currentRenderedAge = ageIndex;
             
-            // INCREASED UI SIZE: w-24 h-24 (was 16), text-5xl (was 3xl)
             unitContainer.innerHTML = ageData.units.map(u => `
                 <div id="btn-unit-${u.id}" class="unit-card relative w-24 h-24 rounded cursor-pointer flex flex-col items-center justify-center" 
                      onclick="sendAction({type: 'queueUnit', unitId: '${u.id}'})">
@@ -1129,7 +1204,6 @@
 
             const specialBtn = document.getElementById('special-btn');
             if (ageData.special) {
-                // INCREASED UI SIZE for Special Button
                 specialBtn.innerHTML = `<span class="pointer-events-none text-4xl">⭐</span><span class="text-sm pointer-events-none">${ageData.special.name}</span><div id="special-cd-overlay" class="absolute inset-0 bg-black bg-opacity-70 flex items-center justify-center text-white font-bold hidden text-2xl"></div>`;
                 specialBtn.onclick = () => {
                     input.mode = 'ability';
@@ -1145,15 +1219,12 @@
             }
         }
 
-        // --- States ---
-        
-        // Cooldown UI
         const cdOverlay = document.getElementById('special-cd-overlay');
         const specialBtn = document.getElementById('special-btn');
         if (p.specialCooldown > 0 && cdOverlay) {
              cdOverlay.classList.remove('hidden');
              cdOverlay.innerText = Math.ceil(p.specialCooldown);
-             specialBtn.onclick = null; // Disable click
+             specialBtn.onclick = null; 
              specialBtn.classList.add('cursor-not-allowed');
         } else if (cdOverlay) {
              cdOverlay.classList.add('hidden');
@@ -1161,7 +1232,6 @@
              specialBtn.classList.remove('cursor-not-allowed');
         }
 
-        // Unit Buttons
         ageData.units.forEach(u => {
             const btn = document.getElementById(`btn-unit-${u.id}`);
             if (btn) {
@@ -1246,7 +1316,6 @@
 <div id="waiting-room" class="screen hidden w-full h-full flex flex-col items-center justify-center bg-gray-900">
     <div class="glass-panel p-8 rounded-xl max-w-lg w-full">
         <h2 class="text-3xl font-bold mb-4">Lobby</h2>
-        <!-- Fix 2: Updated Copy Functionality -->
         <div id="copy-box" class="bg-black p-4 rounded mb-6 text-base font-mono text-gray-400 cursor-pointer transition" onclick="copyLobbyId()">
             ID: <span id="display-lobby-id" class="text-white font-bold select-all"></span> 
             <span class="text-sm text-gray-500 ml-2">(Click to Copy ID)</span>
@@ -1267,6 +1336,14 @@
 
 <div id="game-screen" class="screen hidden w-full h-full">
     <canvas id="game-canvas"></canvas>
+
+    <!-- Connection Overlay -->
+    <div id="connection-overlay" class="absolute inset-0 bg-black bg-opacity-70 z-50 flex items-center justify-center hidden">
+        <div class="glass-panel p-8 rounded-xl text-center">
+            <h2 id="connection-msg" class="text-3xl font-bold text-red-500 mb-2">Connection Lost</h2>
+            <p class="text-gray-300">Waiting for Host...</p>
+        </div>
+    </div>
 
     <!-- HUD -->
     <div class="game-ui flex flex-col justify-between p-6">
