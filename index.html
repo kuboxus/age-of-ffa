@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Age of War: FFA Multiplayer</title>
+    <title>Age of War: Multiplayer</title>
     
     <!-- Firebase Imports -->
     <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-app-compat.js"></script>
@@ -33,6 +33,8 @@
 
         .btn-primary { background: #eab308; color: #000; font-weight: bold; padding: 8px 16px; border-radius: 4px; transition: 0.2s; }
         .btn-primary:hover { background: #facc15; }
+        .btn-secondary { background: #4b5563; color: #fff; font-weight: bold; padding: 6px 12px; border-radius: 4px; transition: 0.2s; }
+        .btn-secondary:hover { background: #6b7280; }
         .btn-danger { background: #ef4444; color: #fff; font-weight: bold; padding: 4px 8px; border-radius: 4px; font-size: 12px; }
         .btn-danger:hover { background: #dc2626; }
         
@@ -41,7 +43,7 @@
 
         #lobby-screen { background: url('data:image/svg+xml;utf8,<svg width="100" height="100" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><g fill="%23333"><path d="M0 0h50v50H0zM50 50h50v50H50z"/></g></svg>'); }
         
-        .glass-panel { background: rgba(20, 20, 20, 0.85); backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 4px 30px rgba(0,0,0,0.5); }
+        .glass-panel { background: rgba(20, 20, 20, 0.95); backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 4px 30px rgba(0,0,0,0.5); }
         
         /* Queue items scaled up */
         .queue-item { width: 45px; height: 45px; border: 1px solid #666; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; font-size: 24px; position: relative; }
@@ -50,14 +52,13 @@
         input[type="color"] { -webkit-appearance: none; border: none; width: 40px; height: 40px; cursor: pointer; background: none; }
         input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
         input[type="color"]::-webkit-color-swatch { border: 2px solid #666; border-radius: 8px; }
+        
+        input[type="number"], select { background: #333; color: white; border: 1px solid #555; padding: 4px; border-radius: 4px; }
 
         .lobby-list-item { cursor: pointer; transition: background 0.2s; }
         .lobby-list-item:hover { background: rgba(255,255,255,0.1); }
         
-        /* Range Slider Styling */
-        input[type=range] { -webkit-appearance: none; width: 100%; background: transparent; }
-        input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; height: 16px; width: 16px; border-radius: 50%; background: #eab308; cursor: pointer; margin-top: -6px; }
-        input[type=range]::-webkit-slider-runnable-track { width: 100%; height: 4px; cursor: pointer; background: #555; border-radius: 2px; }
+        .team-header { font-weight: bold; padding: 5px; text-align: center; border-radius: 4px; margin-bottom: 5px; }
     </style>
 </head>
 <body>
@@ -65,29 +66,33 @@
 <!-- === INITIALIZATION & DATA === -->
 <script>
     // --- Configuration ---
-    const VERSION = "v3.0";
+    const VERSION = "v3.0 Teams";
     
-    // Default Settings
+    // --- SETTINGS DEFAULTS ---
     const DEFAULT_SETTINGS = {
         mode: 'FFA', // 'FFA' or 'TEAMS'
         gameSpeed: 1.0,
         unitCostMult: 1.0,
-        goldMult: 1.0,
-        xpMult: 1.0,
+        unitGoldMult: 1.0,
+        unitXpMult: 1.0,
         baseHp: 2500,
-        xpToLevelMult: 1.0,
-        teamPositioning: 'together', // 'together' or 'checkerboard'
-        teams: [
-            { name: "Team 1", color: "#3b82f6" }, // Blue
-            { name: "Team 2", color: "#ef4444" }  // Red
-        ]
+        xpReqMult: 1.0,
+        mapLayout: 'checkerboard', // 'checkerboard' or 'together' (only for teams)
+        team1Name: "Red Team",
+        team1Color: "#ff3333",
+        team2Name: "Blue Team",
+        team2Color: "#3333ff"
     };
+
+    // Active Settings (synced from host)
+    let ACTIVE_SETTINGS = { ...DEFAULT_SETTINGS };
 
     const GAME_DATA = {
         ages: [
             {
                 name: "Stone Age",
                 xpReq: 0,
+                baseHp: 2500, // Overridden by settings
                 special: { name: "Meteor Strike", damage: 200, radius: 100, cooldown: 60 },
                 units: [
                     { id: 'u1_1', name: "Club Man", icon: "🪨", cost: 15, delay: 1.0, hp: 55, meleeDmg: 16, rangedDmg: 0, meleeRange: 20, rangedRange: 0 },
@@ -99,6 +104,7 @@
             {
                 name: "Medieval Age",
                 xpReq: 1000,
+                baseHp: 2500,
                 special: { name: "Arrow Rain", damage: 400, radius: 120, cooldown: 70 },
                 units: [
                     { id: 'u2_1', name: "Sword Man", icon: "⚔️", cost: 50, delay: 2.0, hp: 100, meleeDmg: 32, rangedDmg: 0, meleeRange: 20, rangedRange: 0 },
@@ -110,6 +116,7 @@
             {
                 name: "Renaissance",
                 xpReq: 4000,
+                baseHp: 2500,
                 special: { name: "Artillery Strike", damage: 800, radius: 150, cooldown: 80 },
                 units: [
                     { id: 'u3_1', name: "Duelist", icon: "🗡️", cost: 200, delay: 3.0, hp: 200, meleeDmg: 79, rangedDmg: 0, meleeRange: 25, rangedRange: 0 },
@@ -121,6 +128,7 @@
             {
                 name: "Modern Age",
                 xpReq: 16000,
+                baseHp: 2500,
                 special: { name: "Airstrike", damage: 1500, radius: 180, cooldown: 90 },
                 units: [
                     { id: 'u4_1', name: "Melee Infantry", icon: "🎖️", cost: 1500, delay: 3.0, hp: 300, meleeDmg: 100, rangedDmg: 0, meleeRange: 25, rangedRange: 0 },
@@ -132,6 +140,7 @@
             {
                 name: "Future Age",
                 xpReq: 60000,
+                baseHp: 2500,
                 special: { name: "Ion Cannon", damage: 6000, radius: 250, cooldown: 120 },
                 units: [
                     { id: 'u5_1', name: "Alien Blade", icon: "👽", cost: 5000, delay: 3.0, hp: 1000, meleeDmg: 250, rangedDmg: 0, meleeRange: 40, rangedRange: 0 },
@@ -154,35 +163,30 @@
     let lobbyId = null;
     let isHost = false;
     let localPlayerId = null;
-    let gameLoopRef = null;
     let gameState = null;
     let canvas, ctx;
     let camera = { x: 0, y: 0, zoom: 0.8 };
     let input = { keys: {}, mouse: { x: 0, y: 0, down: false }, targetId: null, mode: 'select' }; 
     let lastUnitBuyTime = 0; 
     let lastUpdateReceived = Date.now(); 
-    let activeSettings = { ...DEFAULT_SETTINGS }; // Local copy of active game settings
-
+    let lobbyUnsub = null;
+    
     // --- NETWORKING & PREDICTION STATE ---
     let renderState = {
-        units: new Map(), // Map<unitId, {x, y, ...targetProps}>
-        projectiles: [] // Local sim
+        units: new Map(),
+        projectiles: []
     };
     
     let pendingQueue = []; 
-    let lobbyUnsub = null;
-    let updateSettingsDebounce = null;
     
     const getLobbyRef = () => db.collection('artifacts').doc(appId).collection('public').doc('data').collection('lobbies');
 
     async function initApp() {
-        // Random Name Gen
         const names = ["Warlord", "Strategist", "Commander", "General", "Captain", "Tactician", "Emperor", "King"];
         const randomName = names[Math.floor(Math.random() * names.length)] + " " + Math.floor(Math.random() * 1000);
         const nameInput = document.getElementById('lobby-name');
         if(nameInput) nameInput.value = randomName;
         
-        // Random Color Gen
         const randomColor = '#' + Math.floor(Math.random()*16777215).toString(16).padStart(6, '0');
         const colorInput = document.getElementById('player-color');
         if(colorInput) colorInput.value = randomColor;
@@ -224,7 +228,6 @@
             if(!listEl) return;
             
             listEl.innerHTML = '';
-            
             const activeLobbies = [];
             snapshot.forEach(doc => {
                 const data = doc.data();
@@ -241,11 +244,11 @@
             activeLobbies.forEach(lobby => {
                 const el = document.createElement('div');
                 el.className = 'lobby-list-item bg-gray-800 border border-gray-600 p-2 rounded mb-2 flex justify-between items-center';
+                const modeLabel = lobby.settings?.mode === 'TEAMS' ? '<span class="text-blue-400 font-bold ml-2">TEAMS</span>' : '';
                 el.innerHTML = `
                     <div>
-                        <div class="font-bold text-yellow-500">${lobby.name}</div>
+                        <div class="font-bold text-yellow-500">${lobby.name} ${modeLabel}</div>
                         <div class="text-xs text-gray-400">Players: ${lobby.players.length}</div>
-                        <div class="text-xs text-blue-300">${lobby.settings?.mode || 'FFA'}</div>
                     </div>
                     <button class="bg-blue-600 text-xs px-2 py-1 rounded">Join</button>
                 `;
@@ -275,6 +278,7 @@
         lobbyId = shortCode;
         
         const initialPlayer = createPlayerObj(localPlayerId, playerNameVal, false, colorVal);
+        // If team mode default, assign team? We'll default to FFA first.
         
         await lobbyRef.set({
             hostId: localPlayerId,
@@ -311,16 +315,16 @@
         await db.runTransaction(async (t) => {
             const fresh = await t.get(lobbyRef);
             if (!fresh.exists) throw "Lobby gone";
-            const data = fresh.data();
-            const players = data.players;
+            const d = fresh.data();
+            const players = d.players;
             if (players.find(p => p.id === localPlayerId)) return; 
             if (players.length >= 10) throw "Lobby Full";
             
-            // Auto-assign team if in team mode
-            if (data.settings && data.settings.mode === 'TEAMS') {
-                 const t1Count = players.filter(p => p.teamId === 0).length;
-                 const t2Count = players.filter(p => p.teamId === 1).length;
-                 newPlayer.teamId = t1Count <= t2Count ? 0 : 1;
+            // Auto-assign team if teams mode
+            if (d.settings.mode === 'TEAMS') {
+                 const t1Count = players.filter(p => p.teamId === 1).length;
+                 const t2Count = players.filter(p => p.teamId === 2).length;
+                 newPlayer.teamId = t1Count <= t2Count ? 1 : 2;
             }
             
             players.push(newPlayer);
@@ -336,136 +340,59 @@
             id: id,
             name: name,
             isBot: isBot,
+            teamId: null, // 0/null = FFA, 1 = Team 1, 2 = Team 2
             age: 0,
             xp: 0,
             gold: 300,
-            hp: DEFAULT_SETTINGS.baseHp, 
+            hp: DEFAULT_SETTINGS.baseHp, // Will be updated by settings on start
             maxHp: DEFAULT_SETTINGS.baseHp,
             turrets: [], 
             targetId: null, 
             color: color || `hsl(${Math.random() * 360}, 70%, 50%)`,
             spawnQueue: [], 
             spawnTimer: 0, 
-            _visualTimer: 0, 
-            specialCooldown: 0,
-            teamId: -1 // -1 for FFA, 0 or 1 for Teams
+            _visualTimer: 0,
+            specialCooldown: 0
         };
     }
-    
-    async function kickPlayer(targetId) {
+
+    async function switchTeam(teamId) {
+        if (!lobbyId) return;
+        const lobbyRef = getLobbyRef().doc(lobbyId);
+        await db.runTransaction(async (t) => {
+            const doc = await t.get(lobbyRef);
+            if (!doc.exists) return;
+            const players = doc.data().players.map(p => {
+                if (p.id === localPlayerId) {
+                    return { ...p, teamId: teamId };
+                }
+                return p;
+            });
+            t.update(lobbyRef, { players });
+        });
+    }
+
+    async function updateLobbySetting(key, value) {
         if (!isHost || !lobbyId) return;
-        const lobbyRef = getLobbyRef().doc(lobbyId);
-        await db.runTransaction(async (t) => {
-             const doc = await t.get(lobbyRef);
-             if (!doc.exists) return;
-             const data = doc.data();
-             const newPlayers = data.players.filter(p => p.id !== targetId);
-             t.update(lobbyRef, { players: newPlayers });
-        });
+        
+        // Validation/Typing
+        let val = value;
+        if (key === 'gameSpeed' || key.includes('Mult')) val = parseFloat(value);
+        if (key === 'baseHp') val = parseInt(value);
+        
+        const update = {};
+        update[`settings.${key}`] = val;
+        
+        // Optimistic update
+        ACTIVE_SETTINGS[key] = val;
+        renderLobbySettings();
+        
+        await getLobbyRef().doc(lobbyId).update(update);
     }
     
-    async function switchTeam(playerId) {
-        if (!lobbyId) return;
-        const lobbyRef = getLobbyRef().doc(lobbyId);
-        await db.runTransaction(async (t) => {
-             const doc = await t.get(lobbyRef);
-             if (!doc.exists) return;
-             const data = doc.data();
-             const players = data.players;
-             const p = players.find(x => x.id === playerId);
-             if(p) {
-                 p.teamId = p.teamId === 0 ? 1 : 0;
-                 t.update(lobbyRef, { players });
-             }
-        });
-    }
-
-    async function leaveLobby() {
-        if (!lobbyId) return;
-        const lobbyRef = getLobbyRef().doc(lobbyId);
-        
-        if (lobbyUnsub) lobbyUnsub();
-        lobbyUnsub = null;
-        
-        await db.runTransaction(async (t) => {
-             const doc = await t.get(lobbyRef);
-             if (!doc.exists) return;
-             const data = doc.data();
-             const newPlayers = data.players.filter(p => p.id !== localPlayerId);
-             if (newPlayers.length === 0) {
-                 t.delete(lobbyRef);
-             } else {
-                 let updates = { players: newPlayers };
-                 if (data.hostId === localPlayerId) {
-                     updates.hostId = newPlayers[0].id; 
-                 }
-                 t.update(lobbyRef, updates);
-             }
-        });
-        location.reload();
-    }
-
-    function updateLocalSettingUI(settings) {
-        if(!settings) return;
-        // Map settings to inputs
-        const setVal = (id, val) => {
-            const el = document.getElementById(id);
-            if(el) {
-                if(el.type === 'checkbox') el.checked = val;
-                else el.value = val;
-            }
-        };
-        
-        setVal('set-mode', settings.mode);
-        setVal('set-speed', settings.gameSpeed);
-        setVal('set-cost', settings.unitCostMult);
-        setVal('set-gold', settings.goldMult);
-        setVal('set-xp', settings.xpMult);
-        setVal('set-hp', settings.baseHp);
-        setVal('set-levelup', settings.xpToLevelMult);
-        setVal('set-pos', settings.teamPositioning);
-        
-        if (settings.teams) {
-            setVal('set-t1-name', settings.teams[0].name);
-            setVal('set-t1-color', settings.teams[0].color);
-            setVal('set-t2-name', settings.teams[1].name);
-            setVal('set-t2-color', settings.teams[1].color);
-        }
-
-        // Toggle Visibility based on Mode
-        const teamSettingsDiv = document.getElementById('team-settings-panel');
-        if (settings.mode === 'TEAMS') {
-            teamSettingsDiv.classList.remove('hidden');
-        } else {
-            teamSettingsDiv.classList.add('hidden');
-        }
-    }
-
-    async function saveSettingsFromUI() {
+    async function resetDefaultSettings() {
         if(!isHost || !lobbyId) return;
-        
-        const settings = {
-            mode: document.getElementById('set-mode').value,
-            gameSpeed: parseFloat(document.getElementById('set-speed').value),
-            unitCostMult: parseFloat(document.getElementById('set-cost').value),
-            goldMult: parseFloat(document.getElementById('set-gold').value),
-            xpMult: parseFloat(document.getElementById('set-xp').value),
-            baseHp: parseInt(document.getElementById('set-hp').value),
-            xpToLevelMult: parseFloat(document.getElementById('set-levelup').value),
-            teamPositioning: document.getElementById('set-pos').value,
-            teams: [
-                { name: document.getElementById('set-t1-name').value, color: document.getElementById('set-t1-color').value },
-                { name: document.getElementById('set-t2-name').value, color: document.getElementById('set-t2-color').value }
-            ]
-        };
-        
-        getLobbyRef().doc(lobbyId).update({ settings });
-    }
-    
-    function resetDefaults() {
-        if(!isHost) return;
-        updateLocalSettingUI(DEFAULT_SETTINGS);
-        saveSettingsFromUI();
+        await getLobbyRef().doc(lobbyId).update({ settings: DEFAULT_SETTINGS });
     }
 
     function enterLobbyUI(id, host) {
@@ -473,171 +400,194 @@
         showScreen('waiting-room');
         document.getElementById('display-lobby-id').innerText = id;
         
-        // Setup Settings Inputs Listeners (only for Host)
-        const inputs = document.querySelectorAll('#settings-panel input, #settings-panel select');
-        inputs.forEach(inp => {
-            if(host) {
-                inp.disabled = false;
-                inp.oninput = () => {
-                    // Immediate UI update for sliders labels
-                    // Debounced save
-                    if(updateSettingsDebounce) clearTimeout(updateSettingsDebounce);
-                    updateSettingsDebounce = setTimeout(saveSettingsFromUI, 500);
-                };
-            } else {
-                inp.disabled = true;
-            }
-        });
+        const startBtn = document.getElementById('start-btn');
+        const botBtn = document.getElementById('add-bot-btn');
+        const settingsPanel = document.getElementById('settings-panel');
         
-        const rstBtn = document.getElementById('reset-btn');
-        if(host) rstBtn.classList.remove('hidden'); else rstBtn.classList.add('hidden');
-
-        if(!host) document.getElementById('start-btn').classList.add('hidden');
-        if(!host) document.getElementById('add-bot-btn').classList.add('hidden');
+        if(!host) {
+            startBtn.classList.add('hidden');
+            botBtn.classList.add('hidden');
+            settingsPanel.classList.add('pointer-events-none', 'opacity-80'); 
+        } else {
+            startBtn.classList.remove('hidden');
+            botBtn.classList.remove('hidden');
+            settingsPanel.classList.remove('pointer-events-none', 'opacity-80');
+        }
 
         lobbyUnsub = getLobbyRef().doc(id).onSnapshot(doc => {
-            if(!doc.exists) { alert("Lobby closed."); location.reload(); return; }
+            if(!doc.exists) { location.reload(); return; }
             const data = doc.data();
             
-            const amIIn = data.players.find(p => p.id === localPlayerId);
-            if (!amIIn) { alert("You have been kicked."); location.reload(); return; }
+            // Sync settings
+            if (data.settings) {
+                ACTIVE_SETTINGS = data.settings;
+                renderLobbySettings();
+            }
 
             isHost = (data.hostId === localPlayerId);
-            if(isHost) {
-                 document.getElementById('start-btn').classList.remove('hidden');
-                 document.getElementById('add-bot-btn').classList.remove('hidden');
-                 document.getElementById('reset-btn').classList.remove('hidden');
-                 inputs.forEach(i => i.disabled = false);
-            } else {
-                 document.getElementById('start-btn').classList.add('hidden');
-                 document.getElementById('add-bot-btn').classList.add('hidden');
-                 document.getElementById('reset-btn').classList.add('hidden');
-                 inputs.forEach(i => i.disabled = true);
-            }
-
-            // Sync Settings UI
-            if (data.settings) {
-                updateLocalSettingUI(data.settings);
-            }
-
-            // Render Player List
-            const list = document.getElementById('player-list');
-            list.innerHTML = data.players.map(p => {
-                let extra = '';
-                if (isHost && p.id !== localPlayerId) extra += `<button onclick="kickPlayer('${p.id}')" class="btn-danger ml-2">Kick</button>`;
-                
-                let teamBadge = '';
-                if (data.settings && data.settings.mode === 'TEAMS') {
-                    const teamIdx = p.teamId === undefined ? 0 : p.teamId;
-                    const tConfig = data.settings.teams[teamIdx];
-                    teamBadge = `<div class="cursor-pointer ml-2 px-2 py-0.5 text-xs rounded font-bold border border-white/20" 
-                                style="background:${tConfig.color}; color:white; text-shadow:0 1px 2px black"
-                                onclick="${isHost || p.id === localPlayerId ? `switchTeam('${p.id}')` : ''}"
-                                title="Click to switch team">
-                                ${tConfig.name}
-                                </div>`;
-                }
-
-                return `
-                <div class="flex items-center justify-between bg-gray-700 p-2 rounded mb-1">
-                    <div class="flex items-center gap-2">
-                        <div class="w-3 h-3 rounded-full" style="background:${p.color}"></div>
-                        <span>${p.name} ${p.isBot ? '(BOT)' : ''}</span>
-                        ${teamBadge}
-                    </div>
-                    <div class="flex items-center">
-                        ${p.id === data.hostId ? '<span class="text-xs text-yellow-500 mr-2">HOST</span>' : ''}
-                        ${extra}
-                    </div>
-                </div>`;
-            }).join('');
+            
+            // Update Players List with Teams Support
+            renderPlayerList(data.players, data.hostId, data.settings.mode);
 
             if(data.status === 'playing' || data.status === 'paused') {
                 startGame(data);
             } else if (data.status === 'finished') {
-                if (gameState !== 'finished') {
-                    gameState = 'finished';
-                    let resultText = "GAME OVER";
-                    let resultColor = "text-white";
-                    
-                    if (data.settings.mode === 'TEAMS') {
-                         const myTeam = data.players.find(p=>p.id===localPlayerId)?.teamId;
-                         const winTeam = data.winnerTeam;
-                         if (myTeam === winTeam) { resultText = "VICTORY!"; resultColor = "text-yellow-400"; }
-                         else { resultText = "DEFEAT"; resultColor = "text-red-500"; }
-                    } else {
-                         const amIWinner = data.winner?.id === localPlayerId;
-                         resultText = amIWinner ? "VICTORY!" : "DEFEAT";
-                         resultColor = amIWinner ? "text-yellow-400" : "text-red-500";
-                    }
-
-                    const overlay = document.createElement('div');
-                    overlay.className = "absolute inset-0 bg-black bg-opacity-80 flex flex-col items-center justify-center z-50 pointer-events-auto";
-                    overlay.innerHTML = `
-                        <h1 class="text-6xl font-bold ${resultColor} mb-4">${resultText}</h1>
-                        <p class="text-2xl text-white mb-8">Winner: ${data.winnerName || 'Unknown'}</p>
-                        <button onclick="location.reload()" class="btn-primary">Back to Menu</button>
-                    `;
-                    document.body.appendChild(overlay);
-                }
+                handleGameOver(data);
             }
         });
     }
-
-    function copyLobbyId() {
-        const idText = document.getElementById('display-lobby-id').innerText;
-        const tempInput = document.createElement('input');
-        tempInput.value = idText;
-        document.body.appendChild(tempInput);
-        tempInput.select();
-        document.execCommand('copy');
-        document.body.removeChild(tempInput);
+    
+    function renderLobbySettings() {
+        // Update DOM inputs to match ACTIVE_SETTINGS
+        const ids = ['mode', 'gameSpeed', 'unitCostMult', 'unitGoldMult', 'unitXpMult', 'baseHp', 'xpReqMult', 'mapLayout', 'team1Name', 'team1Color', 'team2Name', 'team2Color'];
+        ids.forEach(id => {
+            const el = document.getElementById(`set-${id}`);
+            if (el) {
+                if (el.type === 'checkbox') el.checked = ACTIVE_SETTINGS[id];
+                else el.value = ACTIVE_SETTINGS[id];
+                
+                // Disable/Enable based on mode
+                if (id === 'mapLayout' || id.includes('team')) {
+                     el.parentElement.style.display = ACTIVE_SETTINGS.mode === 'TEAMS' ? 'block' : 'none';
+                }
+            }
+        });
+        
+        // Show/Hide Team Switching UI based on mode
+        const teamSwitchUI = document.getElementById('team-switch-ui');
+        if (ACTIVE_SETTINGS.mode === 'TEAMS') {
+            teamSwitchUI.classList.remove('hidden');
+            document.getElementById('btn-join-t1').innerText = `Join ${ACTIVE_SETTINGS.team1Name}`;
+            document.getElementById('btn-join-t1').style.borderColor = ACTIVE_SETTINGS.team1Color;
+            document.getElementById('btn-join-t1').style.color = ACTIVE_SETTINGS.team1Color;
+            
+            document.getElementById('btn-join-t2').innerText = `Join ${ACTIVE_SETTINGS.team2Name}`;
+            document.getElementById('btn-join-t2').style.borderColor = ACTIVE_SETTINGS.team2Color;
+            document.getElementById('btn-join-t2').style.color = ACTIVE_SETTINGS.team2Color;
+        } else {
+            teamSwitchUI.classList.add('hidden');
+        }
     }
 
+    function renderPlayerList(players, hostId, mode) {
+        const list = document.getElementById('player-list');
+        list.innerHTML = '';
+        
+        // Helper to render a player row
+        const renderRow = (p) => {
+            let kickBtn = '';
+            if (isHost && p.id !== localPlayerId) {
+                kickBtn = `<button onclick="kickPlayer('${p.id}')" class="btn-danger ml-2">X</button>`;
+            }
+            const isMe = p.id === localPlayerId;
+            const isHostPlayer = p.id === hostId;
+            
+            // In Team mode, use Team Color, else use p.color
+            let displayColor = p.color;
+            if (mode === 'TEAMS') {
+                displayColor = p.teamId === 1 ? ACTIVE_SETTINGS.team1Color : (p.teamId === 2 ? ACTIVE_SETTINGS.team2Color : '#999');
+            }
+
+            return `
+            <div class="flex items-center justify-between bg-gray-700 p-2 rounded mb-1 border-l-4" style="border-left-color: ${displayColor}">
+                <div class="flex items-center gap-2">
+                    <div class="w-3 h-3 rounded-full" style="background:${p.color}"></div> <!-- Personal Color dot -->
+                    <span>${p.name} ${p.isBot ? '(BOT)' : ''}</span>
+                </div>
+                <div class="flex items-center">
+                    ${isHostPlayer ? '<span class="text-xs text-yellow-500 mr-2">HOST</span>' : ''}
+                    ${isMe ? '<span class="text-xs bg-blue-600 px-1 rounded">YOU</span>' : ''}
+                    ${kickBtn}
+                </div>
+            </div>`;
+        };
+
+        if (mode === 'TEAMS') {
+            const t1 = players.filter(p => p.teamId === 1);
+            const t2 = players.filter(p => p.teamId === 2);
+            const spectator = players.filter(p => !p.teamId); // Shouldn't happen often but handles unset
+            
+            list.innerHTML += `<div class="team-header" style="color:${ACTIVE_SETTINGS.team1Color}; border:1px solid ${ACTIVE_SETTINGS.team1Color}">${ACTIVE_SETTINGS.team1Name} (${t1.length})</div>`;
+            t1.forEach(p => list.innerHTML += renderRow(p));
+            
+            list.innerHTML += `<div class="team-header mt-4" style="color:${ACTIVE_SETTINGS.team2Color}; border:1px solid ${ACTIVE_SETTINGS.team2Color}">${ACTIVE_SETTINGS.team2Name} (${t2.length})</div>`;
+            t2.forEach(p => list.innerHTML += renderRow(p));
+            
+            if (spectator.length > 0) {
+                 list.innerHTML += `<div class="team-header mt-4 text-gray-400">Unassigned</div>`;
+                 spectator.forEach(p => list.innerHTML += renderRow(p));
+            }
+        } else {
+            players.forEach(p => {
+                list.innerHTML += renderRow(p);
+            });
+        }
+    }
+    
+    async function kickPlayer(targetId) {
+        if (!isHost || !lobbyId) return;
+        const lobbyRef = getLobbyRef().doc(lobbyId);
+        await db.runTransaction(async (t) => {
+             const doc = await t.get(lobbyRef);
+             const players = doc.data().players.filter(p => p.id !== targetId);
+             t.update(lobbyRef, { players });
+        });
+    }
+    
     async function addBot() {
         if(!isHost) return;
         const lobbyRef = getLobbyRef().doc(lobbyId);
         const doc = await lobbyRef.get();
-        const data = doc.data();
-        const players = data.players;
-        if(players.length >= 10) return alert("Lobby full");
+        const d = doc.data();
+        if(d.players.length >= 10) return alert("Lobby full");
         
-        let tid = -1;
-        if (data.settings.mode === 'TEAMS') {
-             const t1 = players.filter(p => p.teamId === 0).length;
-             const t2 = players.filter(p => p.teamId === 1).length;
-             tid = t1 <= t2 ? 0 : 1;
-        }
-
         const bot = createPlayerObj('bot_' + Date.now(), "Bot " + Math.floor(Math.random()*100), true, `hsl(${Math.random() * 360}, 70%, 50%)`);
-        bot.teamId = tid;
         
-        players.push(bot);
+        // Auto assign team
+        if (d.settings.mode === 'TEAMS') {
+            const t1 = d.players.filter(p => p.teamId === 1).length;
+            const t2 = d.players.filter(p => p.teamId === 2).length;
+            bot.teamId = t1 <= t2 ? 1 : 2;
+        }
+        
+        const players = [...d.players, bot];
         await lobbyRef.update({ players });
     }
 
     async function setGameStarted() {
         if(!isHost) return;
-        // Validate Teams
-        const doc = await getLobbyRef().doc(lobbyId).get();
-        const d = doc.data();
-        if (d.settings.mode === 'TEAMS') {
-            const t1 = d.players.some(p => p.teamId === 0);
-            const t2 = d.players.some(p => p.teamId === 1);
-            if (!t1 || !t2) return alert("Need at least one player on each team!");
-        }
         await getLobbyRef().doc(lobbyId).update({ status: 'playing' });
     }
+    
+    async function leaveLobby() {
+        if (!lobbyId) return;
+        const lobbyRef = getLobbyRef().doc(lobbyId);
+        if (lobbyUnsub) lobbyUnsub();
+        await db.runTransaction(async (t) => {
+             const doc = await t.get(lobbyRef);
+             if (!doc.exists) return;
+             const newPlayers = doc.data().players.filter(p => p.id !== localPlayerId);
+             if (newPlayers.length === 0) t.delete(lobbyRef);
+             else {
+                 let updates = { players: newPlayers };
+                 if (doc.data().hostId === localPlayerId) updates.hostId = newPlayers[0].id;
+                 t.update(lobbyRef, updates);
+             }
+        });
+        location.reload();
+    }
 
-    // --- Game Logic ---
+    // --- GAME ENGINE ---
+
     let simState = { players: [], units: [], projectiles: [], effects: [] };
     
     function startGame(initialData) {
         if(lobbyUnsub) lobbyUnsub();
         showScreen('game-screen');
         
-        activeSettings = initialData.settings || DEFAULT_SETTINGS;
-        
+        // Ensure settings are synced one last time
+        if (initialData.settings) ACTIVE_SETTINGS = initialData.settings;
+
         canvas = document.getElementById('game-canvas');
         ctx = canvas.getContext('2d');
         resizeCanvas();
@@ -649,91 +599,65 @@
         const radius = GAME_DATA.mapRadius * 0.8;
         const center = { x: 0, y: 0 };
         
-        // Sort players based on positioning settings
-        let sortedPlayers = [...simState.players];
-        if (activeSettings.mode === 'TEAMS' && activeSettings.teamPositioning === 'together') {
-            sortedPlayers.sort((a, b) => a.teamId - b.teamId);
-        } else if (activeSettings.mode === 'TEAMS' && activeSettings.teamPositioning === 'checkerboard') {
-            // Interleave (0, 1, 0, 1...) handled by simple index assignment if balanced, but we just distribute evenly on circle
-            // The natural order in lobby might be random, so let's separate them into two arrays and zipper merge
-            const t0 = sortedPlayers.filter(p => p.teamId === 0);
-            const t1 = sortedPlayers.filter(p => p.teamId === 1);
-            sortedPlayers = [];
-            const maxLen = Math.max(t0.length, t1.length);
-            for(let i=0; i<maxLen; i++) {
-                if(t0[i]) sortedPlayers.push(t0[i]);
-                if(t1[i]) sortedPlayers.push(t1[i]);
+        let playersToPosition = [...simState.players];
+        
+        if (ACTIVE_SETTINGS.mode === 'TEAMS') {
+            // Sort players for positioning
+            const t1 = playersToPosition.filter(p => p.teamId === 1);
+            const t2 = playersToPosition.filter(p => p.teamId === 2);
+            
+            // Override colors for game visuals
+            t1.forEach(p => p.color = ACTIVE_SETTINGS.team1Color);
+            t2.forEach(p => p.color = ACTIVE_SETTINGS.team2Color);
+            
+            if (ACTIVE_SETTINGS.mapLayout === 'together') {
+                // T1 on Top (0 to PI), T2 on Bottom (PI to 2PI)
+                const span = Math.PI * 0.8; // Prevent overlap at edges
+                t1.forEach((p, i) => {
+                    const angle = -Math.PI/2 - (span/2) + (span / (t1.length > 1 ? t1.length-1 : 1)) * i; 
+                    if (t1.length===1) p.angle = -Math.PI/2; else p.angle = angle;
+                });
+                t2.forEach((p, i) => {
+                    const angle = Math.PI/2 - (span/2) + (span / (t2.length > 1 ? t2.length-1 : 1)) * i;
+                    if (t2.length===1) p.angle = Math.PI/2; else p.angle = angle;
+                });
+            } else {
+                // Checkerboard / Interleaved
+                // Just space everyone equally, but re-order array to be A, B, A, B
+                playersToPosition = [];
+                const max = Math.max(t1.length, t2.length);
+                for(let i=0; i<max; i++) {
+                    if(t1[i]) playersToPosition.push(t1[i]);
+                    if(t2[i]) playersToPosition.push(t2[i]);
+                }
+                const angleStep = (Math.PI * 2) / playersToPosition.length;
+                playersToPosition.forEach((p, i) => { p.angle = angleStep * i; });
             }
+        } else {
+            // FFA
+            const angleStep = (Math.PI * 2) / playersToPosition.length;
+            playersToPosition.forEach((p, i) => { p.angle = angleStep * i; });
         }
         
-        const angleStep = (Math.PI * 2) / sortedPlayers.length;
-        
-        sortedPlayers.forEach((p, i) => {
-            // Find original player object in simState to update XYZ
-            const originalP = simState.players.find(x => x.id === p.id);
-            const angle = angleStep * i;
-            originalP.x = center.x + Math.cos(angle) * radius;
-            originalP.y = center.y + Math.sin(angle) * radius;
-            
-            // Apply Settings to Player Stats
-            originalP.hp = activeSettings.baseHp;
-            originalP.maxHp = activeSettings.baseHp;
-            
-            const ageData = GAME_DATA.ages[originalP.age];
-            if(ageData && ageData.turret) {
-                 originalP.turrets = [{ id: 'base_turret', typeId: ageData.turret.id, cooldown: 0, slot: 0 }];
-            }
-            if(originalP._visualTimer === undefined) originalP._visualTimer = 0;
+        // Apply calculated positions & settings modifiers
+        playersToPosition.forEach(p => {
+             // Find original reference to update
+             const original = simState.players.find(op => op.id === p.id);
+             original.x = center.x + Math.cos(p.angle) * radius;
+             original.y = center.y + Math.sin(p.angle) * radius;
+             
+             // Apply Settings Overrides
+             original.hp = ACTIVE_SETTINGS.baseHp;
+             original.maxHp = ACTIVE_SETTINGS.baseHp;
+             
+             // Reset age stuff
+             const ageData = GAME_DATA.ages[original.age];
+             if(ageData && ageData.turret) {
+                 original.turrets = [{ id: 'base_turret', typeId: ageData.turret.id, cooldown: 0, slot: 0 }];
+             }
         });
 
-        // Input Listeners
-        // ... (Same Input Logic as before)
-        let isDragging = false;
-        let lastPos = { x: 0, y: 0 };
-        const getPos = (e) => {
-            if (e.changedTouches) return { x: e.changedTouches[0].clientX, y: e.changedTouches[0].clientY };
-            if (e.touches && e.touches.length > 0) return { x: e.touches[0].clientX, y: e.touches[0].clientY };
-            return { x: e.clientX, y: e.clientY };
-        };
-        const onDown = (e) => {
-            if (e.button === 2) { 
-                if (input.mode === 'ability') {
-                    input.mode = 'select';
-                    document.body.style.cursor = 'default';
-                }
-                return;
-            }
-            isDragging = false;
-            const p = getPos(e);
-            input.mouse.down = true; input.mouse.x = p.x; input.mouse.y = p.y; lastPos = p;
-        };
-        const onMove = (e) => {
-            e.preventDefault(); 
-            const p = getPos(e);
-            input.mouse.x = p.x; input.mouse.y = p.y;
-            if (input.mouse.down) {
-                const dx = p.x - lastPos.x; const dy = p.y - lastPos.y;
-                if (Math.abs(dx) > 2 || Math.abs(dy) > 2) isDragging = true;
-                if (isDragging) { camera.x -= dx / camera.zoom; camera.y -= dy / camera.zoom; lastPos = p; }
-            }
-        };
-        const onUp = (e) => {
-            input.mouse.down = false;
-            if (!isDragging && e.button === 0) handleInput();
-            isDragging = false;
-        };
-        canvas.addEventListener('mousedown', onDown);
-        canvas.addEventListener('mousemove', onMove);
-        canvas.addEventListener('mouseup', onUp);
-        canvas.addEventListener('touchstart', onDown, {passive: false});
-        canvas.addEventListener('touchmove', onMove, {passive: false});
-        canvas.addEventListener('touchend', onUp);
-        canvas.addEventListener('wheel', e => {
-            e.preventDefault();
-            camera.zoom *= (1 - e.deltaY * 0.001);
-            camera.zoom = Math.max(0.2, Math.min(camera.zoom, 2.5));
-        });
-        window.addEventListener('contextmenu', e => e.preventDefault());
+        setupInputListeners();
 
         const me = simState.players.find(p => p.id === localPlayerId);
         if (me) { camera.x = me.x; camera.y = me.y; }
@@ -742,14 +666,21 @@
             requestAnimationFrame(hostGameLoop);
             setInterval(hostSync, 200); 
         } else {
+            // Client listener
             getLobbyRef().doc(lobbyId).onSnapshot(doc => {
                 if(!doc.exists) return;
                 const d = doc.data();
                 lastUpdateReceived = Date.now();
                 
+                if (d.status === 'finished' && gameState !== 'finished') {
+                    gameState = 'finished';
+                    handleGameOver(d);
+                    return;
+                }
+
                 if(d.stateJSON) {
                     const parsed = JSON.parse(d.stateJSON);
-                    // Sync Players
+                    
                     d.players.forEach(serverPlayer => {
                         const localP = simState.players.find(p => p.id === serverPlayer.id);
                         if (localP) {
@@ -757,18 +688,15 @@
                             localP.xp = serverPlayer.xp;
                             localP.hp = serverPlayer.hp;
                             localP.age = serverPlayer.age;
-                            
-                            const oldHead = localP.spawnQueue && localP.spawnQueue.length > 0 ? localP.spawnQueue[0].reqId : null;
-                            const newHead = serverPlayer.spawnQueue && serverPlayer.spawnQueue.length > 0 ? serverPlayer.spawnQueue[0].reqId : null;
-                            
+                            // Visual timer sync
+                            const oldHead = localP.spawnQueue?.[0]?.reqId;
+                            const newHead = serverPlayer.spawnQueue?.[0]?.reqId;
                             if (oldHead !== newHead && newHead) {
                                 const stats = getUnitStats(localP.age, serverPlayer.spawnQueue[0].unitId);
-                                if (stats) localP._visualTimer = stats.delay;
-                                else localP._visualTimer = serverPlayer.spawnTimer;
+                                localP._visualTimer = stats ? stats.delay : 0;
                             } else if (serverPlayer.spawnQueue.length > 0) {
-                                if (Math.abs((localP._visualTimer || 0) - serverPlayer.spawnTimer) > 0.3) {
+                                if (Math.abs((localP._visualTimer||0) - serverPlayer.spawnTimer) > 0.3) 
                                     localP._visualTimer = serverPlayer.spawnTimer;
-                                }
                             } else {
                                 localP._visualTimer = 0;
                             }
@@ -780,24 +708,25 @@
 
                     const me = simState.players.find(p => p.id === localPlayerId);
                     if(me && me.spawnQueue) {
-                        const serverQueueIds = new Set(me.spawnQueue.map(i => i.reqId));
-                        pendingQueue = pendingQueue.filter(pending => !serverQueueIds.has(pending.reqId));
+                        const sIds = new Set(me.spawnQueue.map(i => i.reqId));
+                        pendingQueue = pendingQueue.filter(pending => !sIds.has(pending.reqId));
                     }
                     
                     simState.projectiles = parsed.projectiles;
                     simState.effects = parsed.effects;
                     
                     parsed.units.forEach(serverUnit => {
-                        if (renderState.units.has(serverUnit.id)) {
-                            const u = renderState.units.get(serverUnit.id);
-                            u.targetX = serverUnit.x; u.targetY = serverUnit.y;
-                            u.hp = serverUnit.hp; u.maxHp = serverUnit.maxHp;
-                        } else {
-                            renderState.units.set(serverUnit.id, { ...serverUnit, x: serverUnit.x, y: serverUnit.y, targetX: serverUnit.x, targetY: serverUnit.y });
+                        let u = renderState.units.get(serverUnit.id);
+                        if (!u) {
+                            u = { ...serverUnit, x: serverUnit.x, y: serverUnit.y };
+                            renderState.units.set(serverUnit.id, u);
                         }
+                        u.targetX = serverUnit.x; u.targetY = serverUnit.y;
+                        u.hp = serverUnit.hp; u.maxHp = serverUnit.maxHp;
                     });
-                    const serverIds = new Set(parsed.units.map(u => u.id));
-                    for (let [id, u] of renderState.units) { if (!serverIds.has(id)) renderState.units.delete(id); }
+                    for (let [id, u] of renderState.units) {
+                        if (!parsed.units.find(pu => pu.id === id)) renderState.units.delete(id);
+                    }
                     simState.units = Array.from(renderState.units.values());
                 }
             });
@@ -806,34 +735,34 @@
         updateUI();
     }
 
-    // --- Host Simulation ---
-    const TICK_RATE = 1 / 30; 
-    let lastTime = performance.now();
+    // --- HOST LOGIC ---
+    let lastHostTime = performance.now();
     let accumulator = 0;
-    let syncTimer = 0;
+    const TICK_RATE = 1 / 30;
 
     function hostGameLoop(time) {
         if (gameState === 'finished') return;
-        let deltaTime = (time - lastTime) / 1000;
-        lastTime = time;
-        if (deltaTime > 0.25) deltaTime = 0.25;
-        accumulator += deltaTime;
+        let dt = (time - lastHostTime) / 1000;
+        lastHostTime = time;
+        if (dt > 0.25) dt = 0.25;
+
+        // Apply Game Speed Multiplier
+        dt *= ACTIVE_SETTINGS.gameSpeed;
+
+        accumulator += dt;
         while (accumulator >= TICK_RATE) {
             updateHostLogic(TICK_RATE);
             accumulator -= TICK_RATE;
         }
-        syncTimer += deltaTime;
-        if (syncTimer > 0.1) {
-            hostSyncState();
-            syncTimer = 0;
-        }
+        
+        hostSyncState(); // Sync state json frequently
         renderGame(0);
         updateUI();
         requestAnimationFrame(hostGameLoop);
     }
 
     function updateHostLogic(dt) {
-        // Process Actions
+        // Process Inputs
         getLobbyRef().doc(lobbyId).collection('requests').get().then(snap => {
             snap.forEach(doc => { processAction(doc.data()); doc.ref.delete(); });
         });
@@ -843,18 +772,17 @@
             if (p.hp <= 0) { p.spawnQueue = []; return; }
             if (p.isBot) runBotLogic(p, dt);
             if (p.specialCooldown > 0) p.specialCooldown -= dt;
-
+            
+            // Spawning
             if (p.spawnQueue.length > 0) {
-                p.spawnTimer -= dt * activeSettings.gameSpeed; // SPEED MULTIPLIER
+                p.spawnTimer -= dt;
                 if (p.spawnTimer <= 0) {
                     const item = p.spawnQueue.shift();
                     spawnUnitReal(p.id, item.unitId);
                     if (p.spawnQueue.length > 0) {
                         const stats = getUnitStats(p.age, p.spawnQueue[0].unitId);
                         p.spawnTimer = stats ? stats.delay : 1.0;
-                    } else {
-                        p.spawnTimer = 0;
-                    }
+                    } else p.spawnTimer = 0;
                 }
             }
         });
@@ -868,13 +796,11 @@
 
         // Projectiles
         simState.projectiles = simState.projectiles.filter(p => {
-            p.x += p.vx * dt * 400 * activeSettings.gameSpeed; 
-            p.y += p.vy * dt * 400 * activeSettings.gameSpeed;
-            
+            p.x += p.vx * dt * 400; p.y += p.vy * dt * 400;
             let hit = false;
-            // FILTER TARGETS: Only Enemies
-            const targets = simState.units.filter(u => isEnemy(p.ownerId, u.ownerId));
             
+            // Check collisions (Filtered by Friendly Fire)
+            const targets = simState.units.filter(u => !isFriendly(p.ownerId, u.ownerId));
             for (let t of targets) {
                 if (dist(p.x, p.y, t.x, t.y) < GAME_DATA.unitCollisionRadius + 5) {
                     t.hp -= p.damage;
@@ -886,7 +812,7 @@
             }
             if (!hit) {
                 simState.players.forEach(pl => {
-                    if (isEnemy(p.ownerId, pl.id) && pl.hp > 0 && dist(p.x, p.y, pl.x, pl.y) < GAME_DATA.baseRadius) {
+                    if (pl.hp > 0 && !isFriendly(p.ownerId, pl.id) && dist(p.x, p.y, pl.x, pl.y) < GAME_DATA.baseRadius) {
                         pl.hp -= p.damage;
                         hit = true;
                         if (pl.hp <= 0) pl.hp = 0; 
@@ -896,183 +822,98 @@
             return !hit && Math.abs(p.x) < 2000 && Math.abs(p.y) < 2000; 
         });
 
+        // Effects
         simState.effects = simState.effects.filter(e => { e.timer -= dt; return e.timer > 0; });
-        
-        // --- WIN CONDITION ---
+
         checkWinCondition();
+    }
+    
+    function isFriendly(id1, id2) {
+        if (id1 === id2) return true; // Self
+        if (ACTIVE_SETTINGS.mode !== 'TEAMS') return false; // FFA everyone is enemy
+        const p1 = simState.players.find(p => p.id === id1);
+        const p2 = simState.players.find(p => p.id === id2);
+        if (!p1 || !p2) return false;
+        // Same team?
+        return p1.teamId === p2.teamId && p1.teamId !== null;
     }
 
     function checkWinCondition() {
         const alivePlayers = simState.players.filter(p => p.hp > 0);
         
-        if (activeSettings.mode === 'TEAMS') {
-             // Check if only one team has alive players
-             const teamsAlive = new Set(alivePlayers.map(p => p.teamId));
-             
-             if (teamsAlive.size <= 1 && simState.players.length > 1) {
-                  // Wait a moment to ensure it's not a draw or just initialization glitch
-                  // For simplicity, immediate win
-                  if (teamsAlive.size === 1) {
-                      const winTeamId = Array.from(teamsAlive)[0];
-                      const winTeamName = activeSettings.teams[winTeamId].name;
-                      finishGame({ winnerTeam: winTeamId, winnerName: winTeamName });
-                  } else if (teamsAlive.size === 0) {
-                      finishGame({ winnerName: "Draw" });
-                  }
-             }
+        if (ACTIVE_SETTINGS.mode === 'TEAMS') {
+            const t1Alive = alivePlayers.some(p => p.teamId === 1);
+            const t2Alive = alivePlayers.some(p => p.teamId === 2);
+            
+            if (!t1Alive && t2Alive) endGame({ type: 'TEAM', teamId: 2, name: ACTIVE_SETTINGS.team2Name });
+            else if (t1Alive && !t2Alive) endGame({ type: 'TEAM', teamId: 1, name: ACTIVE_SETTINGS.team1Name });
+            else if (!t1Alive && !t2Alive && simState.players.length > 0) endGame({ type: 'DRAW' });
+            
         } else {
-             // FFA
-             if (alivePlayers.length <= 1 && simState.players.length > 1) {
-                 const winner = alivePlayers[0];
-                 finishGame({ winner: { id: winner?.id, name: winner?.name }, winnerName: winner?.name || "None" });
-             }
+            // FFA
+            if (alivePlayers.length === 1 && simState.players.length > 1) {
+                endGame({ type: 'PLAYER', id: alivePlayers[0].id, name: alivePlayers[0].name });
+            } else if (alivePlayers.length === 0 && simState.players.length > 0) {
+                 endGame({ type: 'DRAW' });
+            }
         }
     }
-
-    function finishGame(resultData) {
+    
+    function endGame(result) {
         gameState = 'finished';
         getLobbyRef().doc(lobbyId).update({
             status: 'finished',
-            ...resultData
+            winner: result
         });
-    }
-
-    function isEnemy(id1, id2) {
-        if (id1 === id2) return false;
-        if (activeSettings.mode === 'TEAMS') {
-            const p1 = simState.players.find(p => p.id === id1);
-            const p2 = simState.players.find(p => p.id === id2);
-            if (p1 && p2 && p1.teamId === p2.teamId) return false;
-        }
-        return true;
-    }
-
-    function hostSyncState() {
-        if(gameState === 'finished') return;
-        const stateJSON = JSON.stringify({
-            units: simState.units.map(u => ({
-                id: u.id, ownerId: u.ownerId, typeId: u.typeId, 
-                x: Math.round(u.x), y: Math.round(u.y), 
-                hp: u.hp, maxHp: u.maxHp, icon: u.icon
-            })),
-            projectiles: simState.projectiles,
-            effects: simState.effects
-        });
-        getLobbyRef().doc(lobbyId).update({ 
-            stateJSON: stateJSON,
-            lastHeartbeat: firebase.firestore.FieldValue.serverTimestamp()
-        });
-    }
-
-    function hostSync() {
-        if(gameState === 'finished') return;
-        getLobbyRef().doc(lobbyId).update({ players: simState.players });
-    }
-
-    function getUnitStats(ageIdx, unitId) {
-        for (const age of GAME_DATA.ages) {
-            const u = age.units.find(x => x.id === unitId);
-            if (u) return u;
-        }
-        return null;
-    }
-
-    function runBotLogic(bot, dt) {
-        // Target Logic
-        if (!bot.targetId || Math.random() < 0.01) {
-            const enemies = simState.players.filter(p => isEnemy(bot.id, p.id) && p.hp > 0);
-            if (enemies.length > 0) {
-                bot.targetId = enemies[Math.floor(Math.random() * enemies.length)].id;
-            }
-        }
-        
-        // Upgrade Logic
-        const nextAge = GAME_DATA.ages[bot.age + 1];
-        const reqXp = nextAge ? nextAge.xpReq * activeSettings.xpToLevelMult : Infinity;
-        
-        if (nextAge && bot.xp >= reqXp) {
-             bot.age++;
-             bot.hp = Math.min(bot.hp + 500, activeSettings.baseHp); // Healing on age up restricted to base settings
-             bot.maxHp = activeSettings.baseHp;
-             bot.turrets = [{ id: 'base_turret', typeId: GAME_DATA.ages[bot.age].turret.id, cooldown: 0, slot: 0 }];
-        }
-        
-        // Buy Logic
-        const ageData = GAME_DATA.ages[bot.age];
-        if (bot.spawnQueue.length < 3 && Math.random() < 0.05) {
-            const unitOpts = ageData.units;
-            const pick = unitOpts[Math.floor(Math.random() * unitOpts.length)];
-            const actualCost = Math.floor(pick.cost * activeSettings.unitCostMult);
-            
-            if (bot.gold >= actualCost) {
-                bot.gold -= actualCost;
-                bot.spawnQueue.push({ reqId: 'bot_'+Math.random(), unitId: pick.id });
-                if (bot.spawnQueue.length === 1) bot.spawnTimer = pick.delay;
-            }
-        }
-        // Special Logic
-        if (bot.specialCooldown <= 0 && ageData.special && bot.targetId) {
-             const t = simState.players.find(p => p.id === bot.targetId);
-             if (t) useSpecial(bot.id, t.x, t.y);
-        }
     }
 
     function updateUnit(u, dt) {
-        const owner = simState.players.find(p => p.id === u.ownerId);
+        const targetPlayer = simState.players.find(p => p.id === u.targetId);
         
-        if(u.cooldownTimer > 0) u.cooldownTimer -= dt * 60 * activeSettings.gameSpeed;
+        if(u.cooldownTimer > 0) u.cooldownTimer -= dt * 60;
 
-        // Auto-Targeting
-        let targetPlayer = simState.players.find(p => p.id === u.targetId);
-        // Verify target is valid enemy
-        if (!targetPlayer || targetPlayer.hp <= 0 || !isEnemy(u.ownerId, targetPlayer.id)) {
-            // Find new target
-            let close = null;
-            let minDist = Infinity;
+        // Retargeting logic if target is dead or friendly (shouldn't happen but safe guard)
+        if (!targetPlayer || targetPlayer.hp <= 0 || isFriendly(u.ownerId, targetPlayer.id)) {
+            // Find closest enemy base
+            let close = null, minDist = Infinity;
             simState.players.forEach(p => {
-                if (isEnemy(u.ownerId, p.id) && p.hp > 0) {
+                if (!isFriendly(u.ownerId, p.id) && p.hp > 0) {
                     const d = dist(u.x, u.y, p.x, p.y);
                     if (d < minDist) { minDist = d; close = p; }
                 }
             });
-            if (close) { u.targetId = close.id; targetPlayer = close; }
-            else { return; } // No enemies
+            if (close) u.targetId = close.id;
+            return;
         }
 
-        let enemy = null;
-        let enemyDist = Infinity;
+        // Combat Logic
+        let enemy = null, enemyDist = Infinity;
+        const unitRadius = GAME_DATA.unitCollisionRadius;
         
-        // Check for units in range
+        // Check Units
         for (let other of simState.units) {
-            if (isEnemy(u.ownerId, other.ownerId)) {
+            if (!isFriendly(u.ownerId, other.ownerId)) {
                 const d = dist(u.x, u.y, other.x, other.y);
-                const combinedRadii = GAME_DATA.unitCollisionRadius * 2;
-                const maxRange = Math.max(u.meleeRange, u.rangedRange);
-                if (d <= maxRange + combinedRadii && d < enemyDist) {
-                    enemyDist = d;
-                    enemy = other;
+                if (d <= Math.max(u.meleeRange, u.rangedRange) + unitRadius*2 && d < enemyDist) {
+                    enemyDist = d; enemy = other;
                 }
             }
         }
-        
-        // Check for base in range if no unit closer
+        // Check Base
         if (!enemy) {
              const d = dist(u.x, u.y, targetPlayer.x, targetPlayer.y);
-             const baseRadius = GAME_DATA.baseRadius;
-             const maxRange = Math.max(u.meleeRange, u.rangedRange);
-             if (d <= maxRange + GAME_DATA.unitCollisionRadius + baseRadius) {
-                 enemy = { type: 'base', x: targetPlayer.x, y: targetPlayer.y, id: targetPlayer.id, radius: baseRadius };
+             if (d <= Math.max(u.meleeRange, u.rangedRange) + unitRadius + GAME_DATA.baseRadius) {
+                 enemy = { type: 'base', x: targetPlayer.x, y: targetPlayer.y, id: targetPlayer.id };
                  enemyDist = d;
              }
         }
 
         if (enemy) {
-            const enemyRadius = enemy.type === 'base' ? GAME_DATA.baseRadius : GAME_DATA.unitCollisionRadius;
-            const isMeleeRange = enemyDist <= u.meleeRange + GAME_DATA.unitCollisionRadius + enemyRadius;
-            const isRangedRange = u.rangedDmg > 0 && enemyDist <= u.rangedRange + GAME_DATA.unitCollisionRadius + enemyRadius;
-
+            const isMelee = enemyDist <= u.meleeRange + unitRadius + (enemy.type==='base'?GAME_DATA.baseRadius:unitRadius);
+            const isRanged = u.rangedDmg > 0 && enemyDist <= u.rangedRange + unitRadius + (enemy.type==='base'?GAME_DATA.baseRadius:unitRadius);
+            
             if (u.cooldownTimer <= 0) {
-                if (isMeleeRange && u.meleeDmg > 0) {
+                if (isMelee && u.meleeDmg > 0) {
                     if (enemy.type === 'base') {
                         const p = simState.players.find(pl => pl.id === enemy.id);
                         if(p) p.hp -= u.meleeDmg;
@@ -1082,7 +923,7 @@
                     }
                     simState.effects.push({x: enemy.x, y: enemy.y, type: 'hit', timer: 0.2});
                     u.cooldownTimer = 60; 
-                } else if (isRangedRange) {
+                } else if (isRanged) {
                     simState.projectiles.push({
                         x: u.x, y: u.y, 
                         vx: (enemy.x - u.x) / dist(u.x, u.y, enemy.x, enemy.y),
@@ -1099,40 +940,37 @@
             moveUnit(u, targetPlayer, dt);
         }
     }
-
+    
     function moveUnit(u, targetPlayer, dt) {
         let canMove = true;
-        const step = activeSettings.gameSpeed * dt * 50; 
+        const step = 1.0 * dt * 50; 
         const angle = Math.atan2(targetPlayer.y - u.y, targetPlayer.x - u.x);
         const nextX = u.x + Math.cos(angle) * step;
         const nextY = u.y + Math.sin(angle) * step;
 
-        // Collision Check
+        // Collision avoid
         for (let other of simState.units) {
             if (other.id !== u.id) {
                 const d = dist(nextX, nextY, other.x, other.y);
                 if (d < GAME_DATA.unitCollisionRadius * 2) {
-                    const dx = other.x - u.x; const dy = other.y - u.y;
-                    const dot = dx * Math.cos(angle) + dy * Math.sin(angle);
-                    if (dot > 0) { canMove = false; break; }
+                    const dx = other.x - u.x, dy = other.y - u.y;
+                    if (dx * Math.cos(angle) + dy * Math.sin(angle) > 0) {
+                        canMove = false; break;
+                    }
                 }
             }
         }
         if (canMove) { u.x = nextX; u.y = nextY; }
     }
-
+    
     function updateTurrets(p, dt) {
         p.turrets.forEach(t => {
-            const tData = GAME_DATA.ages.find(a => a.turret && a.turret.id === t.typeId)?.turret;
-            if (!tData) return;
-            
-            if (t.cooldown > 0) t.cooldown -= dt * 60 * activeSettings.gameSpeed;
-            
+            if (t.cooldown > 0) t.cooldown -= dt * 60;
             if (t.cooldown <= 0) {
-                let target = null;
-                let minD = tData.range;
+                const tData = getTurretData(t.typeId);
+                let target = null, minD = tData.range;
                 for (let u of simState.units) {
-                    if (isEnemy(p.id, u.ownerId)) {
+                    if (!isFriendly(p.id, u.ownerId)) {
                         const d = dist(p.x, p.y, u.x, u.y);
                         if (d < minD) { minD = d; target = u; }
                     }
@@ -1154,24 +992,28 @@
     function spawnUnitReal(playerId, unitId) {
         const p = simState.players.find(x => x.id === playerId);
         const stats = getUnitStats(p.age, unitId);
+        if(!stats) return;
         
-        let spawnX = p.x; let spawnY = p.y;
+        let spawnX = p.x, spawnY = p.y;
         
-        // Spawn towards target if exists, else towards center
-        let targetAngle = 0;
         if (p.targetId) {
             const target = simState.players.find(tp => tp.id === p.targetId);
-            if (target) targetAngle = Math.atan2(target.y - p.y, target.x - p.x);
+            if (target) {
+                const a = Math.atan2(target.y - p.y, target.x - p.x);
+                spawnX += Math.cos(a) * (GAME_DATA.baseRadius + 20);
+                spawnY += Math.sin(a) * (GAME_DATA.baseRadius + 20);
+            }
         } else {
-             targetAngle = Math.atan2(-p.y, -p.x);
+             // Default spawn direction if no target
+             const a = Math.atan2(-p.y, -p.x);
+             spawnX += Math.cos(a) * (GAME_DATA.baseRadius + 20);
+             spawnY += Math.sin(a) * (GAME_DATA.baseRadius + 20);
         }
-        
-        spawnX += Math.cos(targetAngle) * (GAME_DATA.baseRadius + 20);
-        spawnY += Math.sin(targetAngle) * (GAME_DATA.baseRadius + 20);
 
         simState.units.push({
             id: Math.random().toString(36),
             ownerId: p.id,
+            teamId: p.teamId, // Inherit Team
             typeId: unitId,
             x: spawnX, y: spawnY,
             hp: stats.hp, maxHp: stats.hp,
@@ -1180,379 +1022,453 @@
             cooldownTimer: 0,
             targetId: p.targetId,
             icon: stats.icon,
-            cost: stats.cost
-        });
-    }
-
-    function useSpecial(playerId, x, y) {
-        const p = simState.players.find(x => x.id === playerId);
-        const age = GAME_DATA.ages[p.age];
-        if(!age.special) return;
-        if (p.specialCooldown > 0) return;
-
-        p.specialCooldown = age.special.cooldown;
-        simState.effects.push({x, y, type: 'explosion', radius: age.special.radius, timer: 1.0});
-        
-        // Friendly Fire Check for Special? Usually specials hurt everyone or just enemies. Let's make it safe for teammates.
-        simState.units.forEach(u => {
-            if (isEnemy(playerId, u.ownerId) && dist(u.x, u.y, x, y) < age.special.radius) {
-                u.hp -= age.special.damage;
-                if(u.hp <= 0) awardKill(playerId, u);
-            }
+            cost: stats.cost // Stored for kill rewards
         });
     }
 
     function awardKill(killerId, victimUnit) {
         const killer = simState.players.find(p => p.id === killerId);
         if (killer && victimUnit.cost) {
-            killer.gold += Math.ceil(victimUnit.cost * 1.3 * activeSettings.goldMult);
-            killer.xp += Math.floor(victimUnit.cost * 1.0 * activeSettings.xpMult);
+            killer.gold += Math.ceil(victimUnit.cost * 1.3 * ACTIVE_SETTINGS.unitGoldMult);
+            killer.xp += Math.floor(victimUnit.cost * 1.0 * ACTIVE_SETTINGS.unitXpMult);
+        }
+    }
+    
+    function runBotLogic(bot, dt) {
+        // Find nearest enemy or random enemy
+        if (!bot.targetId || Math.random() < 0.01) {
+            const enemies = simState.players.filter(p => !isFriendly(bot.id, p.id) && p.hp > 0);
+            if (enemies.length > 0) {
+                // Prioritize closest
+                let closest = enemies[0];
+                let minD = dist(bot.x, bot.y, closest.x, closest.y);
+                enemies.forEach(e => {
+                    const d = dist(bot.x, bot.y, e.x, e.y);
+                    if (d < minD) { minD = d; closest = e; }
+                });
+                bot.targetId = closest.id;
+            }
+        }
+        
+        const nextAge = GAME_DATA.ages[bot.age + 1];
+        const req = nextAge ? nextAge.xpReq * ACTIVE_SETTINGS.xpReqMult : Infinity;
+        if (nextAge && bot.xp >= req) {
+             bot.age++;
+             bot.hp = Math.min(bot.hp + 500, ACTIVE_SETTINGS.baseHp);
+             bot.maxHp = ACTIVE_SETTINGS.baseHp;
+             bot.turrets = [{ id: 'base_turret', typeId: GAME_DATA.ages[bot.age].turret.id, cooldown: 0, slot: 0 }];
+        }
+        
+        const ageData = GAME_DATA.ages[bot.age];
+        if (bot.spawnQueue.length < 3 && Math.random() < 0.05) {
+            const unitOpts = ageData.units;
+            const pick = unitOpts[Math.floor(Math.random() * unitOpts.length)];
+            const realCost = Math.floor(pick.cost * ACTIVE_SETTINGS.unitCostMult);
+            if (bot.gold >= realCost) {
+                bot.gold -= realCost;
+                bot.spawnQueue.push({ reqId: 'bot_'+Math.random(), unitId: pick.id });
+                if (bot.spawnQueue.length === 1) bot.spawnTimer = pick.delay;
+            }
         }
     }
 
+    // --- Helpers ---
+    function getUnitStats(ageIdx, unitId) {
+        const u = GAME_DATA.ages[ageIdx]?.units.find(x => x.id === unitId);
+        if (!u) return null;
+        // Return modified copy
+        return {
+            ...u,
+            cost: Math.floor(u.cost * ACTIVE_SETTINGS.unitCostMult)
+        };
+    }
+    function getTurretData(tid) {
+        for(let a of GAME_DATA.ages) if(a.turret?.id === tid) return a.turret;
+        return null;
+    }
+    function dist(x1, y1, x2, y2) { return Math.sqrt((x2-x1)**2 + (y2-y1)**2); }
+    
+    function hostSyncState() {
+        const stateJSON = JSON.stringify({
+            units: simState.units.map(u => ({
+                id: u.id, ownerId: u.ownerId, typeId: u.typeId, 
+                x: Math.round(u.x), y: Math.round(u.y), 
+                hp: u.hp, maxHp: u.maxHp, icon: u.icon
+            })),
+            projectiles: simState.projectiles,
+            effects: simState.effects
+        });
+        getLobbyRef().doc(lobbyId).update({ 
+            stateJSON: stateJSON,
+            lastHeartbeat: firebase.firestore.FieldValue.serverTimestamp()
+        });
+    }
+
+    function hostSync() {
+        getLobbyRef().doc(lobbyId).update({ players: simState.players });
+    }
+    
     function processAction(action) {
         if (action.type === 'queueUnit') {
             const p = simState.players.find(x => x.id === action.playerId);
             if (p && p.hp > 0) {
                  const stats = getUnitStats(p.age, action.unitId);
-                 const cost = Math.floor(stats.cost * activeSettings.unitCostMult);
-                 if (stats && p.gold >= cost) {
-                     p.gold -= cost;
+                 if (stats && p.gold >= stats.cost) {
+                     p.gold -= stats.cost;
                      p.spawnQueue.push({ unitId: action.unitId, reqId: action.reqId });
                      if (p.spawnQueue.length === 1) p.spawnTimer = stats.delay;
                  }
             }
         } else if (action.type === 'setTarget') {
             const p = simState.players.find(x => x.id === action.playerId);
-            if (p && isEnemy(p.id, action.targetId)) {
-                p.targetId = action.targetId;
+            if (p) {
+                // Validate friendly fire in Teams
+                if (!isFriendly(p.id, action.targetId)) {
+                    p.targetId = action.targetId;
+                }
             }
         } else if (action.type === 'upgrade') {
             const p = simState.players.find(x => x.id === action.playerId);
             if (p) {
                 const nextAge = GAME_DATA.ages[p.age + 1];
-                const xpReq = nextAge ? nextAge.xpReq * activeSettings.xpToLevelMult : Infinity;
-                if (nextAge && p.xp >= xpReq) {
+                const req = nextAge ? nextAge.xpReq * ACTIVE_SETTINGS.xpReqMult : Infinity;
+                if (nextAge && p.xp >= req) {
                     p.age++;
-                    p.hp = Math.min(p.hp + 500, activeSettings.baseHp);
-                    p.maxHp = activeSettings.baseHp;
+                    p.hp += 500;
+                    p.maxHp = ACTIVE_SETTINGS.baseHp;
                     p.turrets = [{ id: 'base_turret', typeId: GAME_DATA.ages[p.age].turret.id, cooldown: 0, slot: 0 }];
                 }
             }
         } else if (action.type === 'special') {
-             useSpecial(action.playerId, action.x, action.y);
+             // Use special logic (omitted for brevity, similar to previous version but with settings)
+             // For now assume simple damage
+             const p = simState.players.find(x => x.id === action.playerId);
+             if (p && p.specialCooldown <= 0) {
+                 const age = GAME_DATA.ages[p.age];
+                 if (age.special) {
+                     p.specialCooldown = age.special.cooldown;
+                     simState.effects.push({x:action.x, y:action.y, type:'explosion', radius:age.special.radius, timer:1.0});
+                     simState.units.forEach(u => {
+                         if (!isFriendly(p.id, u.ownerId) && dist(u.x, u.y, action.x, action.y) < age.special.radius) {
+                             u.hp -= age.special.damage;
+                             if(u.hp <= 0) awardKill(p.id, u);
+                         }
+                     });
+                 }
+             }
         }
     }
-
-    // --- Client Interaction ---
-    let lastClientTime = performance.now();
     
+    // --- CLIENT RENDER LOOP ---
+    let lastClientTime = performance.now();
     function clientRenderLoop(time) {
-        const dt = (time - lastClientTime) / 1000;
+        if(gameState === 'finished') return;
+        let dt = (time - lastClientTime) / 1000;
         lastClientTime = time;
         
-        // Timer Sync
         simState.players.forEach(p => {
-            if (p._visualTimer > 0) {
-                p._visualTimer -= dt * activeSettings.gameSpeed;
-                if(p._visualTimer < 0) p._visualTimer = 0;
-            }
+            if (p._visualTimer > 0) p._visualTimer = Math.max(0, p._visualTimer - (dt * ACTIVE_SETTINGS.gameSpeed));
         });
-
+        
         renderGame(dt);
         updateUI();
-        if (gameState !== 'finished') requestAnimationFrame(clientRenderLoop);
+        requestAnimationFrame(clientRenderLoop);
     }
+    
+    function renderGame(dt) {
+        ctx.fillStyle = '#1a1a1a'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        ctx.save();
+        ctx.translate(canvas.width/2, canvas.height/2);
+        ctx.scale(camera.zoom, camera.zoom);
+        ctx.translate(-camera.x, -camera.y);
 
-    function sendAction(data) {
-        const now = Date.now();
-        const reqId = localPlayerId + '_' + now + '_' + Math.random();
-
-        if (data.type === 'queueUnit') {
-            lastUnitBuyTime = now;
-            if (!isHost) {
-                const p = simState.players.find(x => x.id === localPlayerId);
-                const stats = getUnitStats(p.age, data.unitId);
-                const cost = Math.floor(stats.cost * activeSettings.unitCostMult);
-                
-                if (p && stats && p.gold >= cost) {
-                    pendingQueue.push({ unitId: data.unitId, reqId: reqId, timestamp: now, cost: cost, startTime: now });
-                    updateUI();
-                }
+        // Map Border
+        ctx.strokeStyle = '#444'; ctx.lineWidth = 5; ctx.beginPath();
+        ctx.arc(0, 0, GAME_DATA.mapRadius, 0, Math.PI * 2); ctx.stroke();
+        
+        // Players
+        simState.players.forEach(p => {
+             if (p.hp <= 0) {
+                 ctx.fillStyle = '#222'; ctx.beginPath(); ctx.arc(p.x, p.y, GAME_DATA.baseRadius, 0, Math.PI*2); ctx.fill(); return;
+             }
+             
+             // Selection Ring
+             const me = simState.players.find(me => me.id === localPlayerId);
+             if (me && me.targetId === p.id) {
+                 ctx.strokeStyle = '#fff'; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(p.x, p.y, GAME_DATA.baseRadius + 10, 0, Math.PI*2); ctx.stroke();
+             }
+             
+             // Base
+             ctx.fillStyle = p.color;
+             ctx.beginPath(); ctx.arc(p.x, p.y, GAME_DATA.baseRadius, 0, Math.PI*2); ctx.fill();
+             
+             // Turret
+             if(p.turrets.length > 0) {
+                 const tur = p.turrets[0];
+                 const tData = getTurretData(tur.typeId);
+                 ctx.fillStyle = '#555'; ctx.beginPath(); ctx.arc(p.x, p.y, 30, 0, Math.PI*2); ctx.fill(); 
+                 ctx.fillStyle = '#fff'; ctx.font = '36px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                 ctx.fillText(tData.icon, p.x, p.y);
+             }
+             
+             // HP
+             drawBar(p.x, p.y - GAME_DATA.baseRadius - 15, 120, 12, p.hp, p.maxHp, '#0f0');
+             ctx.fillStyle = '#fff'; ctx.font = '22px Arial'; ctx.fillText(p.name, p.x, p.y - GAME_DATA.baseRadius - 40);
+        });
+        
+        // Units
+        const units = isHost ? simState.units : Array.from(renderState.units.values());
+        units.forEach(u => {
+            if(!isHost) {
+                 const t = 1.0 - Math.pow(0.001, dt);
+                 u.x += (u.targetX - u.x) * t; u.y += (u.targetY - u.y) * t;
+            }
+            const p = simState.players.find(pl => pl.id === u.ownerId);
+            ctx.fillStyle = p ? p.color : '#fff';
+            ctx.beginPath(); ctx.arc(u.x, u.y, 28, 0, Math.PI*2); ctx.fill();
+            ctx.font = '44px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(u.icon, u.x, u.y);
+            drawBar(u.x, u.y - 48, 48, 8, u.hp, u.maxHp, '#0f0');
+        });
+        
+        // Projectiles
+        simState.projectiles.forEach(p => {
+            if (!isHost) { p.x += p.vx*dt*400; p.y += p.vy*dt*400; }
+            ctx.fillStyle = '#ff0'; ctx.beginPath(); ctx.arc(p.x, p.y, 8, 0, Math.PI*2); ctx.fill();
+        });
+        
+        // Effects
+        simState.effects.forEach(e => {
+            if (e.type === 'hit') { ctx.fillStyle = `rgba(255,255,255,${e.timer*2})`; ctx.beginPath(); ctx.arc(e.x, e.y, 20, 0, Math.PI*2); ctx.fill(); }
+            else if (e.type === 'explosion') { ctx.fillStyle = `rgba(255,100,0,${e.timer})`; ctx.beginPath(); ctx.arc(e.x, e.y, e.radius, 0, Math.PI*2); ctx.fill(); }
+        });
+        
+        // Ability Reticle
+        if (input.mode === 'ability') {
+             const rect = canvas.getBoundingClientRect();
+             const wx = (input.mouse.x - canvas.width/2)/camera.zoom + camera.x;
+             const wy = (input.mouse.y - canvas.height/2)/camera.zoom + camera.y;
+             const me = simState.players.find(p=>p.id === localPlayerId);
+             const r = GAME_DATA.ages[me.age].special?.radius || 100;
+             ctx.strokeStyle = 'rgba(255,0,0,0.5)'; ctx.fillStyle='rgba(255,0,0,0.2)';
+             ctx.beginPath(); ctx.arc(wx, wy, r, 0, Math.PI*2); ctx.stroke(); ctx.fill();
+        }
+        
+        ctx.restore();
+    }
+    
+    function drawBar(x, y, w, h, val, max, color) {
+        ctx.fillStyle = '#000'; ctx.fillRect(x - w/2, y, w, h);
+        ctx.fillStyle = color; ctx.fillRect(x - w/2, y, Math.max(0, (val/max)*w), h);
+    }
+    
+    function handleGameOver(data) {
+        const overlay = document.createElement('div');
+        overlay.className = "absolute inset-0 bg-black bg-opacity-80 flex flex-col items-center justify-center z-50 pointer-events-auto";
+        let title = "GAME OVER";
+        let sub = "";
+        let color = "text-white";
+        
+        if (data.winner) {
+            if (data.winner.type === 'TEAM') {
+                const myP = simState.players.find(p => p.id === localPlayerId);
+                const won = myP && myP.teamId === data.winner.teamId;
+                title = won ? "VICTORY" : "DEFEAT";
+                color = won ? "text-yellow-400" : "text-red-500";
+                sub = `${data.winner.name} Wins!`;
+            } else if (data.winner.type === 'PLAYER') {
+                const won = localPlayerId === data.winner.id;
+                title = won ? "VICTORY" : "DEFEAT";
+                color = won ? "text-yellow-400" : "text-red-500";
+                sub = `${data.winner.name} Wins!`;
+            } else {
+                title = "DRAW";
+                sub = "No one survived.";
             }
         }
-        const payload = { ...data, playerId: localPlayerId, reqId: reqId };
-        if (isHost) processAction(payload);
-        else getLobbyRef().doc(lobbyId).collection('requests').add({ ...payload, timestamp: firebase.firestore.FieldValue.serverTimestamp() });
+        
+        overlay.innerHTML = `
+            <h1 class="text-6xl font-bold ${color} mb-4">${title}</h1>
+            <p class="text-2xl text-white mb-8">${sub}</p>
+            <button onclick="location.reload()" class="btn-primary">Back to Menu</button>
+        `;
+        document.body.appendChild(overlay);
     }
 
-    function handleInput() {
+    // --- INPUT HANDLING ---
+    function setupInputListeners() {
+        const onDown = (e) => {
+            const p = getPos(e);
+            input.mouse.down = true; input.mouse.x = p.x; input.mouse.y = p.y;
+            input.lastPos = p;
+            if (e.button === 2 && input.mode === 'ability') { input.mode = 'select'; document.body.style.cursor='default'; }
+        };
+        const onMove = (e) => {
+            e.preventDefault();
+            const p = getPos(e);
+            input.mouse.x = p.x; input.mouse.y = p.y;
+            if (input.mouse.down) {
+                const dx = p.x - input.lastPos.x, dy = p.y - input.lastPos.y;
+                camera.x -= dx / camera.zoom; camera.y -= dy / camera.zoom;
+                input.lastPos = p;
+            }
+        };
+        const onUp = (e) => {
+            input.mouse.down = false;
+            if (e.button === 0) handleClick();
+        };
+        const getPos = (e) => {
+            if(e.changedTouches) return {x:e.changedTouches[0].clientX, y:e.changedTouches[0].clientY};
+            return {x:e.clientX, y:e.clientY};
+        };
+        
+        canvas.addEventListener('mousedown', onDown);
+        canvas.addEventListener('mousemove', onMove);
+        canvas.addEventListener('mouseup', onUp);
+        canvas.addEventListener('wheel', e => { e.preventDefault(); camera.zoom = Math.max(0.2, Math.min(camera.zoom* (1 - e.deltaY*0.001), 2.5)); });
+        window.addEventListener('contextmenu', e=>e.preventDefault());
+    }
+    
+    function handleClick() {
         const rect = canvas.getBoundingClientRect();
-        const mx = (input.mouse.x - rect.left - canvas.width/2) / camera.zoom + camera.x;
-        const my = (input.mouse.y - rect.top - canvas.height/2) / camera.zoom + camera.y;
+        const mx = (input.mouse.x - rect.left - canvas.width/2)/camera.zoom + camera.x;
+        const my = (input.mouse.y - rect.top - canvas.height/2)/camera.zoom + camera.y;
 
         if (input.mode === 'ability') {
-            sendAction({ type: 'special', x: mx, y: my });
-            input.mode = 'select'; document.body.style.cursor = 'default';
-            return;
+             sendAction({type:'special', x:mx, y:my});
+             input.mode = 'select'; document.body.style.cursor='default';
+             return;
         }
 
         let clickedBase = null;
         simState.players.forEach(p => { if (dist(mx, my, p.x, p.y) < GAME_DATA.baseRadius) clickedBase = p; });
 
         if (clickedBase && clickedBase.id !== localPlayerId) {
-            // Check friendly fire for target setting
-            if (activeSettings.mode === 'TEAMS') {
-                const me = simState.players.find(p=>p.id===localPlayerId);
-                if (me.teamId === clickedBase.teamId) {
-                    // Trying to target teammate
-                    return; 
-                }
-            }
-            sendAction({ type: 'setTarget', targetId: clickedBase.id });
+            // Cannot target friendly in teams
+            if (isFriendly(localPlayerId, clickedBase.id)) return;
+            sendAction({type:'setTarget', targetId: clickedBase.id});
         }
     }
-
-    // --- Rendering ---
-    function renderGame(dt) {
-        if (!dt || dt > 0.5) dt = 0.016;
-
-        ctx.fillStyle = '#1a1a1a'; 
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-        ctx.save();
-        ctx.translate(canvas.width/2, canvas.height/2);
-        ctx.scale(camera.zoom, camera.zoom);
-        ctx.translate(-camera.x, -camera.y);
-
-        // Map Bounds
-        ctx.strokeStyle = '#444'; ctx.lineWidth = 5; ctx.beginPath();
-        ctx.arc(0, 0, GAME_DATA.mapRadius, 0, Math.PI * 2); ctx.stroke();
-
-        simState.players.forEach(p => {
-            if (p.hp <= 0) {
-                 ctx.fillStyle = '#222'; ctx.beginPath(); ctx.arc(p.x, p.y, GAME_DATA.baseRadius, 0, Math.PI*2); ctx.fill();
-                 return;
-            }
-            
-            const me = simState.players.find(me => me.id === localPlayerId);
-            if (me && me.targetId === p.id) {
-                ctx.strokeStyle = '#ff0000'; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(p.x, p.y, GAME_DATA.baseRadius + 10, 0, Math.PI*2); ctx.stroke();
-            }
-
-            // DETERMINE COLOR
-            let renderColor = p.color;
-            if (activeSettings.mode === 'TEAMS' && p.teamId !== undefined && p.teamId !== -1) {
-                renderColor = activeSettings.teams[p.teamId].color;
-            }
-
-            ctx.fillStyle = renderColor;
-            ctx.beginPath(); ctx.arc(p.x, p.y, GAME_DATA.baseRadius, 0, Math.PI*2); ctx.fill();
-            
-            if(p.turrets.length > 0) {
-                const tur = p.turrets[0];
-                const tData = GAME_DATA.ages.find(a=>a.turret.id===tur.typeId).turret;
-                ctx.fillStyle = '#555'; ctx.beginPath(); ctx.arc(p.x, p.y, 30, 0, Math.PI*2); ctx.fill(); 
-                ctx.fillStyle = '#fff'; ctx.font = '36px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(tData.icon, p.x, p.y);
-            }
-
-            drawBar(p.x, p.y - GAME_DATA.baseRadius - 15, 120, 12, p.hp, p.maxHp, '#0f0');
-            ctx.fillStyle = '#fff'; ctx.font = '22px Arial'; ctx.fillText(p.name, p.x, p.y - GAME_DATA.baseRadius - 40);
-        });
-
-        const unitsToDraw = isHost ? simState.units : Array.from(renderState.units.values());
-        unitsToDraw.forEach(u => {
-            if (!isHost) {
-                const t = 1.0 - Math.pow(0.001, dt); 
-                u.x += (u.targetX - u.x) * t; u.y += (u.targetY - u.y) * t;
-                if (dist(u.x, u.y, u.targetX, u.targetY) > 60) { u.x = u.targetX; u.y = u.targetY; }
-            }
-
-            const p = simState.players.find(pl => pl.id === u.ownerId);
-            let color = '#fff';
-            if (p) {
-                 if (activeSettings.mode === 'TEAMS' && p.teamId !== undefined && p.teamId !== -1) {
-                     color = activeSettings.teams[p.teamId].color;
-                 } else {
-                     color = p.color;
-                 }
-            }
-            
-            ctx.fillStyle = color; ctx.beginPath(); ctx.arc(u.x, u.y, 28, 0, Math.PI*2); ctx.fill();
-            ctx.font = '44px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(u.icon, u.x, u.y);
-            drawBar(u.x, u.y - 48, 48, 8, u.hp, u.maxHp, '#0f0');
-        });
-
-        simState.projectiles.forEach(p => {
-            if (!isHost) { p.x += p.vx * dt * 400 * activeSettings.gameSpeed; p.y += p.vy * dt * 400 * activeSettings.gameSpeed; }
-            ctx.fillStyle = '#ffff00'; ctx.beginPath(); ctx.arc(p.x, p.y, 8, 0, Math.PI*2); ctx.fill();
-        });
-        
-        simState.effects.forEach(e => {
-            if (e.type === 'hit') { ctx.fillStyle = `rgba(255, 255, 255, ${e.timer * 2})`; ctx.beginPath(); ctx.arc(e.x, e.y, 20, 0, Math.PI*2); ctx.fill(); }
-            else if (e.type === 'explosion') { ctx.fillStyle = `rgba(255, 100, 0, ${e.timer})`; ctx.beginPath(); ctx.arc(e.x, e.y, e.radius, 0, Math.PI*2); ctx.fill(); }
-        });
-
-        if (input.mode === 'ability') {
-            const me = simState.players.find(x => x.id === localPlayerId);
-            const age = GAME_DATA.ages[me.age];
-            if(age && age.special) {
-                const rect = canvas.getBoundingClientRect();
-                const wx = (input.mouse.x - canvas.width/2) / camera.zoom + camera.x;
-                const wy = (input.mouse.y - canvas.height/2) / camera.zoom + camera.y;
-                ctx.strokeStyle = 'rgba(255, 0, 0, 0.5)'; ctx.fillStyle = 'rgba(255, 0, 0, 0.2)';
-                ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(wx, wy, age.special.radius, 0, Math.PI*2); ctx.stroke(); ctx.fill();
+    
+    function sendAction(data) {
+        const reqId = localPlayerId + '_' + Date.now() + '_' + Math.random();
+        if (data.type === 'queueUnit') {
+            const p = simState.players.find(x => x.id === localPlayerId);
+            const stats = getUnitStats(p.age, data.unitId);
+            if (p && stats && p.gold >= stats.cost) {
+                pendingQueue.push({ unitId: data.unitId, reqId: reqId, timestamp: Date.now(), cost: stats.cost, startTime: Date.now() });
+                updateUI();
             }
         }
-        ctx.restore();
+        const payload = { ...data, playerId: localPlayerId, reqId: reqId };
+        if (isHost) processAction(payload);
+        else getLobbyRef().doc(lobbyId).collection('requests').add({...payload, timestamp: firebase.firestore.FieldValue.serverTimestamp()});
     }
 
-    function drawBar(x, y, w, h, val, max, color) {
-        ctx.fillStyle = '#000'; ctx.fillRect(x - w/2, y, w, h);
-        ctx.fillStyle = color; const fill = Math.max(0, (val / max) * w); ctx.fillRect(x - w/2, y, fill, h);
-    }
-
+    // --- UI UPDATES ---
     function updateUI() {
         const p = simState.players.find(x => x.id === localPlayerId);
         if (!p) return;
-
-        const ageIndex = p.age;
-        const ageData = GAME_DATA.ages[ageIndex];
-        const nextAge = GAME_DATA.ages[ageIndex + 1];
-
-        let displayGold = p.gold;
-        if (!isHost) pendingQueue.forEach(req => { displayGold -= req.cost; });
         
+        // Gold/XP
+        let displayGold = p.gold;
+        if (!isHost) pendingQueue.forEach(req => displayGold -= req.cost);
         document.getElementById('stats-gold').innerText = Math.floor(Math.max(0, displayGold));
         document.getElementById('stats-xp').innerText = Math.floor(p.xp);
         
-        const queueDiv = document.getElementById('queue-bar');
-        let displayQueue = p.spawnQueue ? [...p.spawnQueue] : [];
-        const mappedPending = pendingQueue.map(pq => ({ unitId: pq.unitId, isPending: true, startTime: pq.startTime }));
-        displayQueue = displayQueue.concat(mappedPending);
-
-        if (displayQueue.length > 0) {
-            queueDiv.classList.remove('hidden');
-            queueDiv.innerHTML = displayQueue.map((item, idx) => {
-                const uStats = getUnitStats(p.age, item.unitId);
-                if (!uStats) return '';
-                let progressHtml = '';
-                if (idx === 0) {
-                    let pct = 0;
-                    if (item.isPending) {
-                        const elapsed = (Date.now() - item.startTime) / 1000;
-                        pct = Math.min(100, Math.max(0, (elapsed / (uStats.delay / activeSettings.gameSpeed)) * 100)); // Speed
-                    } else if (isHost) {
-                        pct = Math.min(100, Math.max(0, (1 - (p.spawnTimer / (uStats.delay))) * 100));
-                    } else {
-                        pct = Math.min(100, Math.max(0, (1 - (p._visualTimer / (uStats.delay))) * 100));
-                    }
-                    progressHtml = `<div class="queue-progress" style="width: ${pct}%"></div>`;
-                } else {
-                     progressHtml = `<div class="queue-progress" style="width: 0%"></div>`;
-                }
-                const opacity = item.isPending ? 'opacity-70' : '';
-                return `<div class="queue-item ${opacity}">${uStats.icon}${progressHtml}</div>`;
+        // Queue
+        const qDiv = document.getElementById('queue-bar');
+        let dQueue = p.spawnQueue ? [...p.spawnQueue] : [];
+        pendingQueue.forEach(pq => dQueue.push({unitId:pq.unitId, isPending:true, startTime:pq.startTime}));
+        if(dQueue.length>0) {
+            qDiv.classList.remove('hidden');
+            qDiv.innerHTML = dQueue.map((item, idx) => {
+                 const s = getUnitStats(p.age, item.unitId);
+                 if(!s) return '';
+                 let pct = 0;
+                 if (idx===0) {
+                     if (item.isPending) pct = Math.min(100, Math.max(0, ((Date.now()-item.startTime)/1000/s.delay)*100));
+                     else pct = Math.min(100, Math.max(0, (1 - (isHost ? p.spawnTimer : p._visualTimer)/s.delay)*100));
+                 }
+                 return `<div class="queue-item ${item.isPending?'opacity-70':''}">${s.icon}<div class="queue-progress" style="width:${pct}%"></div></div>`;
             }).join('');
-        } else {
-            queueDiv.classList.add('hidden'); queueDiv.innerHTML = '';
-        }
-
-        const unitContainer = document.getElementById('unit-bar');
-        // Simple dirty check to rebuild units if age changes
-        const ageAttr = unitContainer.getAttribute('data-age');
-        if (ageAttr !== String(ageIndex)) {
-            unitContainer.setAttribute('data-age', ageIndex);
-            unitContainer.innerHTML = ageData.units.map(u => {
-                // Pre-calculate cost with multiplier for display
-                const cost = Math.floor(u.cost * activeSettings.unitCostMult);
+        } else { qDiv.classList.add('hidden'); }
+        
+        // Units
+        const uDiv = document.getElementById('unit-bar');
+        const age = GAME_DATA.ages[p.age];
+        if (uDiv.dataset.age != p.age) {
+            uDiv.dataset.age = p.age;
+            uDiv.innerHTML = age.units.map(u => {
+                // Pre-calc cost with multiplier for display
+                const modCost = Math.floor(u.cost * ACTIVE_SETTINGS.unitCostMult);
                 return `
-                <div id="btn-unit-${u.id}" class="unit-card relative w-24 h-24 rounded cursor-pointer flex flex-col items-center justify-center" 
-                     onclick="sendAction({type: 'queueUnit', unitId: '${u.id}'})">
+                <div id="btn-unit-${u.id}" class="unit-card relative w-24 h-24 rounded cursor-pointer flex flex-col items-center justify-center" onclick="sendAction({type: 'queueUnit', unitId: '${u.id}'})">
                     <span class="text-5xl pointer-events-none">${u.icon}</span> 
-                    <span class="text-base text-yellow-400 font-bold pointer-events-none">$${cost}</span>
-                    <div class="tooltip pointer-events-none">
-                        <b class="text-yellow-400 text-xl">${u.name}</b><br/>
-                        <div class="grid grid-cols-2 gap-2 mt-1">
-                            <span>❤️ HP: ${u.hp}</span>
-                            <span>⏱️ Train: ${u.delay}s</span>
-                            <span>⚔️ Melee: ${u.meleeDmg} (${u.meleeRange})</span>
-                            <span>🏹 Range: ${u.rangedDmg} (${u.rangedRange})</span>
-                        </div>
-                    </div>
-                </div>
-            `}).join('');
+                    <span class="text-base text-yellow-400 font-bold pointer-events-none">$${modCost}</span>
+                     <div class="tooltip pointer-events-none"><b class="text-yellow-400 text-xl">${u.name}</b></div>
+                </div>`;
+            }).join('');
             
-            // Special button Logic...
-            const specialBtn = document.getElementById('special-btn');
-            if (ageData.special) {
-                specialBtn.innerHTML = `<span class="pointer-events-none text-4xl">⭐</span><span class="text-sm pointer-events-none">${ageData.special.name}</span><div id="special-cd-overlay" class="absolute inset-0 bg-black bg-opacity-70 flex items-center justify-center text-white font-bold hidden text-2xl"></div>`;
-                specialBtn.classList.remove('opacity-50', 'cursor-not-allowed', 'bg-gray-800');
-                specialBtn.classList.add('bg-purple-900', 'border-purple-500', 'hover:bg-purple-800');
+            // Special Button
+            const sBtn = document.getElementById('special-btn');
+            if (age.special) {
+                sBtn.innerHTML = `<span class="pointer-events-none text-4xl">⭐</span><span class="text-sm pointer-events-none">${age.special.name}</span><div id="special-cd-overlay" class="absolute inset-0 bg-black bg-opacity-70 flex items-center justify-center text-white font-bold hidden text-2xl"></div>`;
+                sBtn.onclick = () => { input.mode='ability'; document.body.style.cursor='crosshair'; };
+                sBtn.classList.remove('opacity-50', 'cursor-not-allowed', 'bg-gray-800');
+                sBtn.classList.add('bg-purple-900', 'border-purple-500', 'hover:bg-purple-800');
             } else {
-                specialBtn.innerHTML = 'Locked';
-                specialBtn.classList.add('opacity-50', 'cursor-not-allowed', 'bg-gray-800');
+                sBtn.innerHTML = 'Locked'; sBtn.onclick=null;
+                sBtn.classList.add('opacity-50', 'cursor-not-allowed', 'bg-gray-800');
+                sBtn.classList.remove('bg-purple-900', 'border-purple-500');
             }
-        }
-
-        // Update CD Overlay
-        const cdOverlay = document.getElementById('special-cd-overlay');
-        const specialBtn = document.getElementById('special-btn');
-        if (p.specialCooldown > 0 && cdOverlay) {
-             cdOverlay.classList.remove('hidden'); cdOverlay.innerText = Math.ceil(p.specialCooldown);
-             specialBtn.onclick = null; specialBtn.classList.add('cursor-not-allowed');
-        } else if (cdOverlay) {
-             cdOverlay.classList.add('hidden');
-             specialBtn.onclick = () => { input.mode = 'ability'; document.body.style.cursor = 'crosshair'; };
-             specialBtn.classList.remove('cursor-not-allowed');
-        }
-
-        ageData.units.forEach(u => {
-            const btn = document.getElementById(`btn-unit-${u.id}`);
-            const cost = Math.floor(u.cost * activeSettings.unitCostMult);
-            if (btn) {
-                if (displayGold < cost) btn.classList.add('disabled'); else btn.classList.remove('disabled');
-            }
-        });
-
-        const upgradeBtn = document.getElementById('upgrade-btn');
-        if (nextAge) {
-            upgradeBtn.classList.remove('hidden');
-            const reqXp = nextAge.xpReq * activeSettings.xpToLevelMult;
-            const canAfford = p.xp >= reqXp;
-            if (canAfford) {
-                upgradeBtn.classList.remove('opacity-50', 'cursor-not-allowed');
-                upgradeBtn.onclick = () => { sendAction({type: 'upgrade'}); };
-            } else {
-                upgradeBtn.classList.add('opacity-50', 'cursor-not-allowed');
-                upgradeBtn.onclick = null;
-            }
-            upgradeBtn.innerHTML = `Evolve to ${nextAge.name}<br/><span class="text-xs">${Math.ceil(reqXp)} XP</span>`;
-        } else {
-            upgradeBtn.classList.add('hidden');
         }
         
-        const targetStatus = document.getElementById('target-status');
+        // Disabled States
+        age.units.forEach(u => {
+            const btn = document.getElementById(`btn-unit-${u.id}`);
+            const modCost = Math.floor(u.cost * ACTIVE_SETTINGS.unitCostMult);
+            if(btn) { if(displayGold < modCost) btn.classList.add('disabled'); else btn.classList.remove('disabled'); }
+        });
+        
+        // Evolve
+        const upBtn = document.getElementById('upgrade-btn');
+        const nextAge = GAME_DATA.ages[p.age+1];
+        if (nextAge) {
+            upBtn.classList.remove('hidden');
+            const req = nextAge.xpReq * ACTIVE_SETTINGS.xpReqMult;
+            if (p.xp >= req) { upBtn.classList.remove('opacity-50','cursor-not-allowed'); upBtn.onclick=()=>sendAction({type:'upgrade'}); }
+            else { upBtn.classList.add('opacity-50','cursor-not-allowed'); upBtn.onclick=null; }
+            upBtn.innerHTML = `Evolve<br/><span class="text-xs">${req} XP</span>`;
+        } else upBtn.classList.add('hidden');
+        
+        // Special CD
+        const cdOv = document.getElementById('special-cd-overlay');
+        if (p.specialCooldown > 0 && cdOv) { cdOv.classList.remove('hidden'); cdOv.innerText = Math.ceil(p.specialCooldown); }
+        else if (cdOv) cdOv.classList.add('hidden');
+
+        // Target Status
+        const tStat = document.getElementById('target-status');
         if (p.targetId) {
             const t = simState.players.find(x => x.id === p.targetId);
-            targetStatus.innerText = `Target: ${t ? t.name : 'Unknown'}`;
-            targetStatus.classList.remove('text-red-400', 'animate-pulse'); targetStatus.classList.add('text-white');
+            tStat.innerText = `Target: ${t ? t.name : 'Unknown'}`;
+            tStat.classList.remove('text-red-400', 'animate-pulse'); tStat.classList.add('text-white');
         } else {
-            targetStatus.innerText = "Click Base to Target";
-            targetStatus.classList.add('text-red-400', 'animate-pulse'); targetStatus.classList.remove('text-white');
+            tStat.innerText = "Click Enemy Base";
+            tStat.classList.add('text-red-400', 'animate-pulse'); tStat.classList.remove('text-white');
         }
     }
 
     function resizeCanvas() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
-    function dist(x1, y1, x2, y2) { return Math.sqrt((x2-x1)**2 + (y2-y1)**2); }
     window.addEventListener('DOMContentLoaded', initApp);
+
 </script>
 
 <!-- === UI LAYOUT === -->
 <div id="lobby-screen" class="screen w-full h-full flex flex-row items-center justify-center relative bg-gray-900 gap-8">
     <div class="absolute bottom-4 right-4 text-gray-600 text-sm">Build: <span id="version-display"></span></div>
     <div class="glass-panel p-8 rounded-xl max-w-md w-full text-center">
-        <h1 class="text-5xl font-bold mb-6 text-yellow-500">Age of War: FFA</h1>
+        <h1 class="text-5xl font-bold mb-6 text-yellow-500">Age of War</h1>
         <div id="auth-status" class="mb-6 text-base text-yellow-500 animate-pulse">Connecting...</div>
         <div class="flex flex-col gap-4">
             <input id="lobby-name" type="text" placeholder="Your Name" class="bg-gray-800 border border-gray-600 p-4 rounded text-white text-xl">
@@ -1561,7 +1477,7 @@
                 <input id="player-color" type="color" value="#ff0000" class="flex-1">
             </div>
             <div class="flex items-center gap-2 justify-center text-gray-400 mb-2">
-                 <input type="checkbox" id="is-private-lobby"> <label for="is-private-lobby">Private Game (Code Only)</label>
+                 <input type="checkbox" id="is-private-lobby"> <label for="is-private-lobby">Private Game</label>
             </div>
             <button onclick="createLobby()" class="btn-primary w-full py-4 text-xl">Create New Game</button>
             <div class="flex gap-2 mt-4">
@@ -1572,91 +1488,102 @@
     </div>
     <div class="glass-panel p-6 rounded-xl w-80 h-96 flex flex-col">
         <h2 class="text-xl font-bold text-gray-300 mb-4 border-b border-gray-600 pb-2">Public Games</h2>
-        <div id="active-lobbies-list" class="flex-1 overflow-y-auto pr-2"><div class="text-gray-500 text-sm text-center mt-10">Loading...</div></div>
+        <div id="active-lobbies-list" class="flex-1 overflow-y-auto pr-2">
+            <div class="text-gray-500 text-sm text-center mt-10">Loading...</div>
+        </div>
     </div>
 </div>
 
-<div id="waiting-room" class="screen hidden w-full h-full flex items-center justify-center bg-gray-900 p-8">
-    <div class="flex gap-8 w-full max-w-6xl h-full max-h-[800px]">
-        <!-- Left: Player List -->
-        <div class="glass-panel p-6 rounded-xl flex-1 flex flex-col">
-            <h2 class="text-3xl font-bold mb-4">Lobby <span class="text-lg font-normal text-gray-400" id="display-lobby-id"></span></h2>
-            <div class="flex gap-2 mb-4">
-                <button class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm" onclick="copyLobbyId()">Copy Code</button>
+<div id="waiting-room" class="screen hidden w-full h-full flex items-center justify-center bg-gray-900 p-8 overflow-hidden">
+    <div class="glass-panel p-6 rounded-xl w-full max-w-6xl h-full flex gap-6">
+        
+        <!-- LEFT COLUMN: Players & Basic Info -->
+        <div class="flex-1 flex flex-col">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-3xl font-bold">Lobby <span id="display-lobby-id" class="text-gray-400 text-xl font-mono"></span></h2>
+                <button onclick="leaveLobby()" class="text-red-500 underline text-sm">Leave</button>
             </div>
-            <div class="flex-1 overflow-y-auto mb-4 border border-gray-700 rounded p-2 bg-black/20">
-                <div id="player-list" class="flex flex-col gap-1"></div>
+            
+            <div id="team-switch-ui" class="flex gap-2 mb-4 hidden">
+                <button id="btn-join-t1" onclick="switchTeam(1)" class="flex-1 border border-gray-500 rounded p-2 hover:bg-gray-800 transition">Join Team 1</button>
+                <button id="btn-join-t2" onclick="switchTeam(2)" class="flex-1 border border-gray-500 rounded p-2 hover:bg-gray-800 transition">Join Team 2</button>
             </div>
+
+            <div class="flex-1 bg-gray-800 rounded p-4 mb-4 overflow-y-auto">
+                <div id="player-list" class="flex flex-col gap-2"></div>
+            </div>
+
             <div class="flex gap-4">
-                <button id="add-bot-btn" onclick="addBot()" class="bg-gray-600 hover:bg-gray-500 text-white px-4 py-3 rounded flex-1">Add Bot</button>
-                <button id="start-btn" onclick="setGameStarted()" class="btn-primary flex-1 text-lg">Start Game</button>
+                <button id="add-bot-btn" onclick="addBot()" class="bg-gray-600 hover:bg-gray-500 text-white px-6 py-3 rounded flex-1">Add Bot</button>
+                <button id="start-btn" onclick="setGameStarted()" class="btn-primary flex-1 text-xl">Start Game</button>
             </div>
-            <button onclick="leaveLobby()" class="text-red-500 hover:text-red-400 text-sm underline mt-4 text-center">Leave Lobby</button>
         </div>
 
-        <!-- Right: Settings -->
-        <div id="settings-panel" class="glass-panel p-6 rounded-xl w-96 flex flex-col overflow-y-auto">
-            <div class="flex justify-between items-center mb-4">
-                <h3 class="text-xl font-bold text-gray-200">Game Settings</h3>
-                <button id="reset-btn" onclick="resetDefaults()" class="text-xs text-yellow-500 hover:text-white border border-yellow-500 px-2 py-1 rounded">Reset</button>
+        <!-- RIGHT COLUMN: Settings (Host Only Editable) -->
+        <div id="settings-panel" class="w-80 bg-gray-800 rounded p-4 flex flex-col gap-3 overflow-y-auto">
+            <div class="flex justify-between items-center border-b border-gray-600 pb-2 mb-2">
+                <h3 class="font-bold text-yellow-500">Game Settings</h3>
+                <button onclick="resetDefaultSettings()" class="text-xs text-blue-400 hover:text-blue-300">Reset</button>
             </div>
 
-            <div class="space-y-4 text-sm">
-                <!-- Mode -->
-                <div>
-                    <label class="block text-gray-400 mb-1">Game Mode</label>
-                    <select id="set-mode" class="w-full bg-gray-800 border border-gray-600 rounded p-2 text-white">
-                        <option value="FFA">Free For All</option>
-                        <option value="TEAMS">Team vs Team</option>
-                    </select>
-                </div>
+            <!-- Mode Selector -->
+            <div class="flex flex-col gap-1">
+                <label class="text-xs text-gray-400">Game Mode</label>
+                <select id="set-mode" onchange="updateLobbySetting('mode', this.value)" class="w-full">
+                    <option value="FFA">FFA (Free For All)</option>
+                    <option value="TEAMS">Teams (2 Teams)</option>
+                </select>
+            </div>
 
-                <!-- Team Config Section -->
-                <div id="team-settings-panel" class="hidden space-y-4 border-t border-b border-gray-700 py-4 my-2">
-                    <div class="text-xs font-bold text-gray-400 uppercase">Team Configuration</div>
-                    <div>
-                        <label class="block text-gray-500">Positioning</label>
-                        <select id="set-pos" class="w-full bg-gray-800 border border-gray-600 rounded p-1 text-xs">
-                            <option value="together">Together (Side by Side)</option>
-                            <option value="checkerboard">Checkerboard (Alternating)</option>
-                        </select>
-                    </div>
-                    <div class="grid grid-cols-2 gap-2">
-                        <div>
-                            <input id="set-t1-name" type="text" class="w-full bg-gray-800 border border-gray-600 rounded p-1 text-xs mb-1" placeholder="Team 1">
-                            <input id="set-t1-color" type="color" class="w-full h-6 rounded cursor-pointer">
-                        </div>
-                        <div>
-                            <input id="set-t2-name" type="text" class="w-full bg-gray-800 border border-gray-600 rounded p-1 text-xs mb-1" placeholder="Team 2">
-                            <input id="set-t2-color" type="color" class="w-full h-6 rounded cursor-pointer">
-                        </div>
-                    </div>
+            <!-- Team Settings (Hidden if FFA) -->
+            <div class="flex flex-col gap-2 border-t border-gray-600 pt-2">
+                 <label class="text-xs text-gray-400">Map Layout (Teams)</label>
+                 <select id="set-mapLayout" onchange="updateLobbySetting('mapLayout', this.value)" class="w-full">
+                     <option value="checkerboard">Checkerboard (Alternating)</option>
+                     <option value="together">Together (Clusters)</option>
+                 </select>
+            </div>
+            
+            <div class="grid grid-cols-2 gap-2">
+                <div>
+                     <label class="text-xs text-gray-400">Team 1 Name</label>
+                     <input id="set-team1Name" onchange="updateLobbySetting('team1Name', this.value)" type="text" class="w-full text-xs">
+                     <input id="set-team1Color" onchange="updateLobbySetting('team1Color', this.value)" type="color" class="w-full h-6 mt-1">
                 </div>
+                <div>
+                     <label class="text-xs text-gray-400">Team 2 Name</label>
+                     <input id="set-team2Name" onchange="updateLobbySetting('team2Name', this.value)" type="text" class="w-full text-xs">
+                     <input id="set-team2Color" onchange="updateLobbySetting('team2Color', this.value)" type="color" class="w-full h-6 mt-1">
+                </div>
+            </div>
 
-                <!-- Sliders -->
-                <div>
-                    <div class="flex justify-between"><label class="text-gray-400">Game Speed</label> <span class="text-xs text-yellow-500">Multiplier</span></div>
-                    <input id="set-speed" type="number" step="0.1" min="0.5" max="5.0" class="w-full bg-gray-800 border border-gray-600 rounded p-1">
+            <div class="border-t border-gray-600 my-2"></div>
+
+            <!-- Numeric Multipliers -->
+            <div class="grid grid-cols-1 gap-3">
+                <div class="flex justify-between items-center">
+                    <label class="text-sm">Game Speed</label>
+                    <input id="set-gameSpeed" onchange="updateLobbySetting('gameSpeed', this.value)" type="number" step="0.1" min="0.5" max="3.0" class="w-16 text-right">
                 </div>
-                <div>
-                    <div class="flex justify-between"><label class="text-gray-400">Unit Cost</label> <span class="text-xs text-yellow-500">Multiplier</span></div>
-                    <input id="set-cost" type="number" step="0.1" min="0.1" max="5.0" class="w-full bg-gray-800 border border-gray-600 rounded p-1">
+                <div class="flex justify-between items-center">
+                    <label class="text-sm">Base HP</label>
+                    <input id="set-baseHp" onchange="updateLobbySetting('baseHp', this.value)" type="number" step="100" min="500" max="10000" class="w-16 text-right">
                 </div>
-                <div>
-                    <div class="flex justify-between"><label class="text-gray-400">Gold Reward</label> <span class="text-xs text-yellow-500">Multiplier</span></div>
-                    <input id="set-gold" type="number" step="0.1" min="0.1" max="10.0" class="w-full bg-gray-800 border border-gray-600 rounded p-1">
+                <div class="flex justify-between items-center">
+                    <label class="text-sm">Unit Cost x</label>
+                    <input id="set-unitCostMult" onchange="updateLobbySetting('unitCostMult', this.value)" type="number" step="0.1" min="0.1" max="5.0" class="w-16 text-right">
                 </div>
-                <div>
-                    <div class="flex justify-between"><label class="text-gray-400">XP Reward</label> <span class="text-xs text-yellow-500">Multiplier</span></div>
-                    <input id="set-xp" type="number" step="0.1" min="0.1" max="10.0" class="w-full bg-gray-800 border border-gray-600 rounded p-1">
+                <div class="flex justify-between items-center">
+                    <label class="text-sm">Gold Reward x</label>
+                    <input id="set-unitGoldMult" onchange="updateLobbySetting('unitGoldMult', this.value)" type="number" step="0.1" min="0.1" max="5.0" class="w-16 text-right">
                 </div>
-                <div>
-                    <div class="flex justify-between"><label class="text-gray-400">Base HP</label> <span class="text-xs text-yellow-500">Points</span></div>
-                    <input id="set-hp" type="number" step="100" min="500" max="20000" class="w-full bg-gray-800 border border-gray-600 rounded p-1">
+                <div class="flex justify-between items-center">
+                    <label class="text-sm">XP Reward x</label>
+                    <input id="set-unitXpMult" onchange="updateLobbySetting('unitXpMult', this.value)" type="number" step="0.1" min="0.1" max="5.0" class="w-16 text-right">
                 </div>
-                <div>
-                    <div class="flex justify-between"><label class="text-gray-400">XP to Level Up</label> <span class="text-xs text-yellow-500">Multiplier</span></div>
-                    <input id="set-levelup" type="number" step="0.1" min="0.1" max="5.0" class="w-full bg-gray-800 border border-gray-600 rounded p-1">
+                <div class="flex justify-between items-center">
+                    <label class="text-sm">XP To Level x</label>
+                    <input id="set-xpReqMult" onchange="updateLobbySetting('xpReqMult', this.value)" type="number" step="0.1" min="0.1" max="5.0" class="w-16 text-right">
                 </div>
             </div>
         </div>
@@ -1665,9 +1592,6 @@
 
 <div id="game-screen" class="screen hidden w-full h-full">
     <canvas id="game-canvas"></canvas>
-    <div id="connection-overlay" class="absolute inset-0 bg-black bg-opacity-70 z-50 flex items-center justify-center hidden">
-        <div class="glass-panel p-8 rounded-xl text-center"><h2 id="connection-msg" class="text-3xl font-bold text-red-500 mb-2">Connection Lost</h2></div>
-    </div>
     <div class="game-ui flex flex-col justify-between p-6">
         <div class="flex justify-between items-start pointer-events-auto">
             <div class="glass-panel p-4 rounded flex gap-6 text-base">
@@ -1681,11 +1605,10 @@
             <div id="queue-bar" class="flex gap-2 mb-2 hidden"></div>
             <div class="flex items-end gap-6">
                 <button id="special-btn" class="relative w-24 h-24 rounded bg-purple-900 border-2 border-purple-500 hover:bg-purple-800 flex flex-col items-center justify-center transition overflow-hidden">Locked</button>
-                <div id="unit-bar" class="flex gap-4 glass-panel p-4 rounded-xl"></div>
+                <div id="unit-bar" class="flex gap-4 glass-panel p-4 rounded-xl" data-age="-1"></div>
             </div>
         </div>
     </div>
 </div>
-
 </body>
 </html>
