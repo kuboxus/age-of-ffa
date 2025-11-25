@@ -52,7 +52,7 @@
 <!-- === INITIALIZATION & DATA === -->
 <script>
     // --- Configuration ---
-    // SPEED: All units move at speed 1.0 (approx ~50px/sec in simulation space)
+    const VERSION = "v1.3";
     const STANDARD_SPEED = 1.0; 
     
     // Stats sourced from Age of War 1 Wiki / Game Data
@@ -139,14 +139,16 @@
     let input = { keys: {}, mouse: { x: 0, y: 0, down: false }, targetId: null, mode: 'select' }; 
     let lastUnitBuyTime = 0; // For debounce
     
-    // Smoothing Data
+    // Smoothing & Logic Data
     let renderState = {
         units: new Map(), // Map<unitId, {x, y, ...targetProps}>
     };
+    let pendingQueue = []; // Local "Optimistic" Queue items { reqId, unitId, timestamp }
     
     const getLobbyRef = () => db.collection('artifacts').doc(appId).collection('public').doc('data').collection('lobbies');
 
     async function initApp() {
+        // Init logic same as before...
         const firebaseConfig = {
 			apiKey: "AIzaSyAcn7ZymxXYPTOhayD1DU2IOAQA7J7Ltrg",
 			authDomain: "ageofffa.firebaseapp.com",
@@ -169,8 +171,9 @@
             user = u;
             if (user) {
                 localPlayerId = user.uid;
-                document.getElementById('auth-status').innerText = "Connected";
+                document.getElementById('auth-status').innerText = `Connected (${VERSION})`;
                 document.getElementById('auth-status').classList.add('text-green-500');
+                document.getElementById('version-display').innerText = VERSION;
                 showScreen('lobby-screen');
             }
         });
@@ -244,8 +247,8 @@
             turrets: [], 
             targetId: null, 
             color: `hsl(${Math.random() * 360}, 70%, 50%)`,
-            spawnQueue: [], // Array of { unitId, delay, maxDelay }
-            spawnTimer: 0, // Timer for the CURRENT unit in queue
+            spawnQueue: [], // Array of { reqId (unique), unitId }
+            spawnTimer: 0, 
             specialCooldown: 0
         };
     }
@@ -303,8 +306,6 @@
         tempInput.select();
         document.execCommand('copy');
         document.body.removeChild(tempInput);
-        
-        // Optional visual feedback
         const btn = document.getElementById('copy-box');
         const originalBg = btn.style.background;
         btn.style.background = '#225522';
@@ -362,7 +363,7 @@
             }
         });
 
-        // Input Setup
+        // Input Listeners
         let isDragging = false;
         let lastPos = { x: 0, y: 0 };
         const getPos = (e) => {
@@ -399,7 +400,6 @@
             if (!isDragging) handleInput();
             isDragging = false;
         };
-
         canvas.addEventListener('mousedown', onDown);
         canvas.addEventListener('mousemove', onMove);
         canvas.addEventListener('mouseup', onUp);
@@ -411,7 +411,6 @@
             camera.zoom *= (1 - e.deltaY * 0.001);
             camera.zoom = Math.max(0.2, Math.min(camera.zoom, 2.5));
         });
-        
         window.addEventListener('contextmenu', e => {
             e.preventDefault();
             if (input.mode === 'ability') {
@@ -437,7 +436,8 @@
             });
 
             requestAnimationFrame(hostGameLoop);
-            setInterval(hostSync, 1000); // Sync every 1s is enough for lobby metadata, stateJSON handled separately
+            // Increased sync rate to 200ms for lobby data (players hp etc) to make disconnects detected faster
+            setInterval(hostSync, 200); 
         } else {
             getLobbyRef().doc(lobbyId).onSnapshot(doc => {
                 if(!doc.exists) return;
@@ -450,11 +450,13 @@
                 const connectionOverlay = document.getElementById('connection-overlay');
                 const connectionMsg = document.getElementById('connection-msg');
                 
-                // If paused explicitly OR heartbeat is stale (> 4000ms)
+                // Paused check
                 if (d.status === 'paused') {
                     connectionOverlay.classList.remove('hidden');
-                    connectionMsg.innerText = "Host Paused the Game";
-                } else if (timeSinceHeartbeat > 4000) {
+                    connectionMsg.innerText = "Host Paused the Game (Minimized)";
+                } 
+                // Heartbeat stale check (Wait 3s)
+                else if (timeSinceHeartbeat > 3000) {
                     connectionOverlay.classList.remove('hidden');
                     connectionMsg.innerText = "Connection Lost / Host Left";
                 } else {
@@ -463,12 +465,23 @@
 
                 if(d.stateJSON) {
                     const parsed = JSON.parse(d.stateJSON);
-                    simState.players = d.players; 
+                    
+                    // FLUID QUEUE LOGIC:
+                    // Merge server players with local optimistic state
+                    simState.players = d.players;
+                    
+                    // Clean pending queue
+                    const me = simState.players.find(p => p.id === localPlayerId);
+                    if(me && me.spawnQueue) {
+                        const serverQueueIds = new Set(me.spawnQueue.map(i => i.reqId));
+                        // Remove pending items that are now on server
+                        pendingQueue = pendingQueue.filter(pending => !serverQueueIds.has(pending.reqId));
+                    }
+                    
                     simState.projectiles = parsed.projectiles;
                     simState.effects = parsed.effects;
                     
                     // INTERPOLATION SETUP:
-                    // Instead of overwriting simState.units, update render targets
                     parsed.units.forEach(serverUnit => {
                         if (renderState.units.has(serverUnit.id)) {
                             // Update existing unit target
@@ -495,8 +508,18 @@
                         if (!serverIds.has(id)) renderState.units.delete(id);
                     }
                     
-                    // Fallback for logic needing "all units" array
                     simState.units = Array.from(renderState.units.values());
+                    
+                    // TIMER SYNC:
+                    // Only snap timer if it's drifted significantly > 1.0s
+                    // Otherwise let client simulation handle the smoothness
+                    if (me && me.spawnTimer !== undefined) {
+                         const serverTimer = me.spawnTimer;
+                         // We track a local property _clientTimer on the player object for rendering
+                         if (me._clientTimer === undefined || Math.abs(me._clientTimer - serverTimer) > 1.0) {
+                             me._clientTimer = serverTimer;
+                         }
+                    }
                 }
             });
             requestAnimationFrame(clientRenderLoop);
@@ -515,9 +538,8 @@
     function hostGameLoop(time) {
         if (gameState === 'finished') return;
         
-        // Pause check (if browser didn't stop RAF entirely)
         if (document.hidden) {
-            lastTime = time; // Prevent huge delta jump when returning
+            lastTime = time;
             requestAnimationFrame(hostGameLoop);
             return;
         }
@@ -534,8 +556,6 @@
             accumulator -= TICK_RATE;
         }
         
-        // Sync State to Firestore approx every 100ms (10 times/sec) for smooth updates
-        // Independent of render FPS
         syncTimer += deltaTime;
         if (syncTimer > 0.1) {
             hostSyncState();
@@ -567,15 +587,16 @@
             
             if (p.specialCooldown > 0) p.specialCooldown -= dt;
 
+            // Spawn Queue Logic
             if (p.spawnQueue.length > 0) {
                 p.spawnTimer -= dt;
                 if (p.spawnTimer <= 0) {
-                    const unitId = p.spawnQueue.shift();
-                    spawnUnitReal(p.id, unitId);
+                    const item = p.spawnQueue.shift();
+                    spawnUnitReal(p.id, item.unitId);
                     
                     if (p.spawnQueue.length > 0) {
-                        const nextId = p.spawnQueue[0];
-                        const stats = getUnitStats(p.age, nextId);
+                        const nextItem = p.spawnQueue[0];
+                        const stats = getUnitStats(p.age, nextItem.unitId);
                         p.spawnTimer = stats ? stats.delay : 1.0;
                     } else {
                         p.spawnTimer = 0;
@@ -638,7 +659,6 @@
         }
     }
 
-    // Separate High-Freq Sync for Units
     function hostSyncState() {
         if(gameState === 'finished') return;
         const stateJSON = JSON.stringify({
@@ -652,11 +672,10 @@
         });
         getLobbyRef().doc(lobbyId).update({ 
             stateJSON: stateJSON,
-            lastHeartbeat: firebase.firestore.FieldValue.serverTimestamp() // Heartbeat included here
+            lastHeartbeat: firebase.firestore.FieldValue.serverTimestamp()
         });
     }
 
-    // Low-Freq Sync for Players/Lobby Data (called via setInterval)
     function hostSync() {
         if(gameState === 'finished') return;
         getLobbyRef().doc(lobbyId).update({
@@ -694,7 +713,8 @@
             const pick = unitOpts[Math.floor(Math.random() * unitOpts.length)];
             if (bot.gold >= pick.cost) {
                 bot.gold -= pick.cost;
-                bot.spawnQueue.push(pick.id);
+                // Bot queue structure { reqId, unitId }
+                bot.spawnQueue.push({ reqId: 'bot_'+Math.random(), unitId: pick.id });
                 if (bot.spawnQueue.length === 1) bot.spawnTimer = pick.delay;
             }
         }
@@ -919,7 +939,8 @@
                  const stats = getUnitStats(p.age, action.unitId);
                  if (stats && p.gold >= stats.cost) {
                      p.gold -= stats.cost;
-                     p.spawnQueue.push(action.unitId);
+                     // Store unit ID and request ID
+                     p.spawnQueue.push({ unitId: action.unitId, reqId: action.reqId });
                      if (p.spawnQueue.length === 1) {
                          p.spawnTimer = stats.delay;
                      }
@@ -946,8 +967,31 @@
 
     // --- Client Interaction ---
     
+    // Clients run simulation locally for timers to keep them fluid
+    let lastClientTime = performance.now();
+    
+    function clientRenderLoop(time) {
+        const dt = (time - lastClientTime) / 1000;
+        lastClientTime = time;
+        
+        // Advance local timers
+        const p = simState.players.find(p => p.id === localPlayerId);
+        if (p && p.spawnQueue && p.spawnQueue.length > 0) {
+            // Use _clientTimer for fluid UI
+            if (p._clientTimer === undefined) p._clientTimer = p.spawnTimer || 0;
+            p._clientTimer -= dt;
+            if (p._clientTimer < 0) p._clientTimer = 0;
+        }
+
+        renderGame(dt); // Pass dt for interpolation
+        updateUI();
+        if (gameState !== 'finished') requestAnimationFrame(clientRenderLoop);
+    }
+
     function sendAction(data) {
         const now = Date.now();
+        const reqId = localPlayerId + '_' + now + '_' + Math.random();
+
         if (data.type === 'queueUnit') {
             if (now - lastUnitBuyTime < 500) return; 
             lastUnitBuyTime = now;
@@ -956,17 +1000,19 @@
             const stats = getUnitStats(p.age, data.unitId);
             if (p && stats && p.gold >= stats.cost) {
                 p.gold -= stats.cost;
-                p.spawnQueue.push(data.unitId);
+                // Add to local pending queue
+                pendingQueue.push({ unitId: data.unitId, reqId: reqId, timestamp: now });
                 updateUI();
             }
         }
 
+        const payload = { ...data, playerId: localPlayerId, reqId: reqId };
+
         if (isHost) {
-            processAction({ ...data, playerId: localPlayerId });
+            processAction(payload);
         } else {
             getLobbyRef().doc(lobbyId).collection('requests').add({
-                ...data,
-                playerId: localPlayerId,
+                ...payload,
                 timestamp: firebase.firestore.FieldValue.serverTimestamp()
             });
         }
@@ -998,13 +1044,10 @@
 
     // --- Rendering ---
 
-    function clientRenderLoop() {
-        renderGame();
-        updateUI();
-        if (gameState !== 'finished') requestAnimationFrame(clientRenderLoop);
-    }
+    function renderGame(dt) {
+        // Safe check for dt
+        if (!dt || dt > 0.5) dt = 0.016;
 
-    function renderGame() {
         ctx.fillStyle = '#1a1a1a'; 
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -1062,19 +1105,19 @@
             ctx.fillText(p.name, p.x, p.y - GAME_DATA.baseRadius - 40);
         });
 
-        // DRAW SMOOTH UNITS (Interpolation)
-        // If Host, we use simState direct. If Client, use renderState
+        // DRAW SMOOTH UNITS (Exponential Interpolation)
         const unitsToDraw = isHost ? simState.units : Array.from(renderState.units.values());
         
         unitsToDraw.forEach(u => {
-            // Apply smoothing for Client
             if (!isHost) {
-                // Lerp towards target
-                u.x += (u.targetX - u.x) * 0.1;
-                u.y += (u.targetY - u.y) * 0.1;
+                // Time-based smooth dampening (frame-rate independent)
+                // Lerp factor ~ 1 - 0.05^(dt)
+                const t = 1.0 - Math.pow(0.001, dt); 
+                u.x += (u.targetX - u.x) * t;
+                u.y += (u.targetY - u.y) * t;
                 
                 // Snap if too far (teleport)
-                if (dist(u.x, u.y, u.targetX, u.targetY) > 50) {
+                if (dist(u.x, u.y, u.targetX, u.targetY) > 60) {
                     u.x = u.targetX;
                     u.y = u.targetY;
                 }
@@ -1157,17 +1200,27 @@
         document.getElementById('stats-gold').innerText = Math.floor(p.gold);
         document.getElementById('stats-xp').innerText = Math.floor(p.xp);
         
-        // --- QUEUE UI ---
+        // --- QUEUE UI (MERGED) ---
         const queueDiv = document.getElementById('queue-bar');
-        if (p.spawnQueue && p.spawnQueue.length > 0) {
+        
+        // 1. Get confirmed server queue items
+        let combinedQueue = p.spawnQueue ? [...p.spawnQueue] : [];
+        
+        // 2. Append local pending items that aren't yet in server queue
+        // (Visual prediction)
+        combinedQueue = combinedQueue.concat(pendingQueue.map(pq => ({ unitId: pq.unitId })));
+
+        if (combinedQueue.length > 0) {
             queueDiv.classList.remove('hidden');
-            queueDiv.innerHTML = p.spawnQueue.map((uid, idx) => {
-                const uStats = getUnitStats(p.age, uid);
+            queueDiv.innerHTML = combinedQueue.map((item, idx) => {
+                const uStats = getUnitStats(p.age, item.unitId);
                 if (!uStats) return '';
                 
                 let progressHtml = '';
                 if (idx === 0) {
-                    const pct = ((uStats.delay - p.spawnTimer) / uStats.delay) * 100;
+                    // Use smooth client timer if available, fallback to server time
+                    const t = p._clientTimer !== undefined ? p._clientTimer : (p.spawnTimer || uStats.delay);
+                    const pct = ((uStats.delay - t) / uStats.delay) * 100;
                     progressHtml = `<div class="queue-progress" style="width: ${pct}%"></div>`;
                 }
                 
@@ -1294,7 +1347,12 @@
 </script>
 
 <!-- === UI LAYOUT === -->
-<div id="lobby-screen" class="screen w-full h-full flex flex-col items-center justify-center">
+<div id="lobby-screen" class="screen w-full h-full flex flex-col items-center justify-center relative">
+    <!-- Version -->
+    <div class="absolute bottom-4 right-4 text-gray-600 text-sm">
+        Build: <span id="version-display"></span>
+    </div>
+
     <div class="glass-panel p-8 rounded-xl max-w-md w-full text-center">
         <h1 class="text-5xl font-bold mb-6 text-yellow-500">Age of War: FFA</h1>
         <p class="mb-4 text-gray-300 text-xl">Multiplayer Strategy Game</p>
