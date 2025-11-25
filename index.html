@@ -60,7 +60,7 @@
 <!-- === INITIALIZATION & DATA === -->
 <script>
     // --- Configuration ---
-    const VERSION = "v2.0";
+    const VERSION = "v2.1";
     const STANDARD_SPEED = 1.0; 
     
     const GAME_DATA = {
@@ -375,6 +375,8 @@
         location.reload();
     }
 
+    let hasSeenSelfInLobby = false; // Guard to prevent false kick messages
+
     function enterLobbyUI(id, host) {
         isHost = host;
         showScreen('waiting-room');
@@ -382,6 +384,8 @@
         if(!host) document.getElementById('start-btn').classList.add('hidden');
         if(!host) document.getElementById('add-bot-btn').classList.add('hidden');
         
+        hasSeenSelfInLobby = false; // Reset guard
+
         const leaveBtn = document.getElementById('leave-btn');
         if (host) {
             document.getElementById('leave-msg').innerText = "Leaving will pass Host to next player.";
@@ -398,12 +402,17 @@
             }
             const data = doc.data();
             
-            // Check if kicked
+            // Check if kicked with guard
             const amIIn = data.players.find(p => p.id === localPlayerId);
-            if (!amIIn) {
+            if (amIIn) {
+                hasSeenSelfInLobby = true;
+            } else if (hasSeenSelfInLobby) {
+                // Only kick if we were definitely there before
                 alert("You have been kicked from the lobby.");
                 location.reload();
                 return;
+            } else {
+                // If we haven't seen self yet, it might be latency. Do nothing.
             }
 
             // Update Host status (in case host migrated)
@@ -535,6 +544,15 @@
             return { x: e.clientX, y: e.clientY };
         };
         const onDown = (e) => {
+            // Handle Right Click Cancel
+            if (e.button === 2) { 
+                if (input.mode === 'ability') {
+                    input.mode = 'select';
+                    document.body.style.cursor = 'default';
+                }
+                return;
+            }
+            
             isDragging = false;
             const p = getPos(e);
             input.mouse.down = true;
@@ -560,7 +578,8 @@
         };
         const onUp = (e) => {
             input.mouse.down = false;
-            if (!isDragging) handleInput();
+            // Only Left Click (0) triggers interaction
+            if (!isDragging && e.button === 0) handleInput();
             isDragging = false;
         };
         canvas.addEventListener('mousedown', onDown);
@@ -576,10 +595,6 @@
         });
         window.addEventListener('contextmenu', e => {
             e.preventDefault();
-            if (input.mode === 'ability') {
-                input.mode = 'select';
-                document.body.style.cursor = 'default';
-            }
         });
 
         const me = simState.players.find(p => p.id === localPlayerId);
@@ -620,8 +635,29 @@
                 if(d.stateJSON) {
                     const parsed = JSON.parse(d.stateJSON);
                     
-                    simState.players = d.players;
+                    // Sync Players
+                    // IMPORTANT: We need to preserve client-side spawnTimer for pending states,
+                    // but authoritative timer comes from server.
                     
+                    // We need to map server spawnTimer to local objects
+                    d.players.forEach(serverPlayer => {
+                        const localP = simState.players.find(p => p.id === serverPlayer.id);
+                        if (localP) {
+                            localP.serverSpawnTimer = serverPlayer.spawnTimer; // Store authoritative timer
+                            // Other props
+                            localP.gold = serverPlayer.gold;
+                            localP.xp = serverPlayer.xp;
+                            localP.hp = serverPlayer.hp;
+                            localP.age = serverPlayer.age;
+                            localP.spawnQueue = serverPlayer.spawnQueue;
+                        }
+                    });
+                    
+                    // If simState.players is empty (first load), just use server data
+                    if (simState.players.length === 0) {
+                        simState.players = d.players;
+                    }
+
                     const me = simState.players.find(p => p.id === localPlayerId);
                     if(me) {
                         // RECONCILE PENDING QUEUE
@@ -1120,38 +1156,6 @@
              connectionMsg.innerText = "Connection Lost / Host Left";
         }
 
-        // --- FIXED PROGRESS BAR LOGIC (CLIENT SIDE) ---
-        const p = simState.players.find(p => p.id === localPlayerId);
-        if (p) {
-            // Count total items in queue (server + pending)
-            const combinedQueueLength = (p.spawnQueue ? p.spawnQueue.length : 0) + pendingQueue.length;
-            
-            // Detect queue state changes
-            if (p._lastQueueLen !== combinedQueueLength) {
-                // If queue grew from empty, or shrank (unit spawned), reset/adjust timer
-                if (combinedQueueLength > 0 && (p._lastQueueLen === 0 || combinedQueueLength < p._lastQueueLen)) {
-                    // Get unit ID at head of queue
-                    let headUnitId = null;
-                    if (p.spawnQueue && p.spawnQueue.length > 0) headUnitId = p.spawnQueue[0].unitId;
-                    else if (pendingQueue.length > 0) headUnitId = pendingQueue[0].unitId;
-                    
-                    if (headUnitId) {
-                         const stats = getUnitStats(p.age, headUnitId);
-                         if (stats) p._clientTimer = stats.delay;
-                    }
-                }
-                p._lastQueueLen = combinedQueueLength;
-            }
-
-            // Run timer
-            if (combinedQueueLength > 0 && p._clientTimer > 0) {
-                p._clientTimer -= dt;
-                if (p._clientTimer < 0) p._clientTimer = 0;
-            } else if (combinedQueueLength === 0) {
-                p._clientTimer = 0;
-            }
-        }
-
         renderGame(dt);
         updateUI();
         if (gameState !== 'finished') requestAnimationFrame(clientRenderLoop);
@@ -1168,13 +1172,19 @@
                 const p = simState.players.find(x => x.id === localPlayerId);
                 const stats = getUnitStats(p.age, data.unitId);
                 if (p && stats && p.gold >= stats.cost) {
-                    const wasQueueEmpty = (!p.spawnQueue || p.spawnQueue.length === 0) && pendingQueue.length === 0;
-                    pendingQueue.push({ unitId: data.unitId, reqId: reqId, timestamp: now, cost: stats.cost });
+                    // Check local gold to prevent spam, but truth is on server
+                    // We optimistically update UI by pushing to pending
                     
-                    // Initialize timer immediately if starting new queue
-                    if (wasQueueEmpty) {
-                        p._clientTimer = stats.delay;
-                    }
+                    const wasQueueEmpty = (!p.spawnQueue || p.spawnQueue.length === 0) && pendingQueue.length === 0;
+                    // Add start time to pending item for local animation
+                    pendingQueue.push({ 
+                        unitId: data.unitId, 
+                        reqId: reqId, 
+                        timestamp: now, 
+                        cost: stats.cost,
+                        startTime: now 
+                    });
+                    
                     updateUI();
                 }
             }
@@ -1378,27 +1388,54 @@
         document.getElementById('stats-gold').innerText = Math.floor(Math.max(0, displayGold));
         document.getElementById('stats-xp').innerText = Math.floor(p.xp);
         
-        // --- QUEUE UI (MERGED) ---
+        // --- QUEUE UI (REWRITTEN) ---
         const queueDiv = document.getElementById('queue-bar');
-        let combinedQueue = p.spawnQueue ? [...p.spawnQueue] : [];
-        combinedQueue = combinedQueue.concat(pendingQueue.map(pq => ({ unitId: pq.unitId })));
+        
+        // Combine server queue and pending queue for display
+        let displayQueue = p.spawnQueue ? [...p.spawnQueue] : [];
+        // Map pending items to same structure
+        const mappedPending = pendingQueue.map(pq => ({ unitId: pq.unitId, isPending: true, startTime: pq.startTime }));
+        displayQueue = displayQueue.concat(mappedPending);
 
-        if (combinedQueue.length > 0) {
+        if (displayQueue.length > 0) {
             queueDiv.classList.remove('hidden');
             
-            queueDiv.innerHTML = combinedQueue.map((item, idx) => {
+            queueDiv.innerHTML = displayQueue.map((item, idx) => {
                 const uStats = getUnitStats(p.age, item.unitId);
                 if (!uStats) return '';
                 
                 let progressHtml = '';
+                
+                // Only animate the FIRST item (Head of Queue)
                 if (idx === 0) {
-                    // Use client timer exclusively
-                    const t = p._clientTimer !== undefined ? p._clientTimer : (uStats.delay);
-                    const pct = Math.min(100, Math.max(0, ((uStats.delay - t) / uStats.delay) * 100));
+                    let pct = 0;
+                    
+                    if (item.isPending) {
+                        // Case A: Queue is purely local/pending (Server queue empty)
+                        // Use local time diff
+                        const elapsed = (Date.now() - item.startTime) / 1000;
+                        pct = Math.min(100, Math.max(0, (elapsed / uStats.delay) * 100));
+                    } else {
+                        // Case B: Item is on Server
+                        // Use authoritative serverSpawnTimer + interpolation
+                        // serverSpawnTimer is "time remaining". 
+                        // We interpolate by subtracting time since last update.
+                        const timeSinceUpdate = (Date.now() - lastUpdateReceived) / 1000;
+                        const interpolatedRemaining = Math.max(0, (p.serverSpawnTimer || 0) - timeSinceUpdate);
+                        
+                        pct = Math.min(100, Math.max(0, (1 - (interpolatedRemaining / uStats.delay)) * 100));
+                    }
+                    
                     progressHtml = `<div class="queue-progress" style="width: ${pct}%"></div>`;
+                } else {
+                    // Items waiting in line have 0 progress
+                     progressHtml = `<div class="queue-progress" style="width: 0%"></div>`;
                 }
                 
-                return `<div class="queue-item">${uStats.icon}${progressHtml}</div>`;
+                // Dim pending items slightly to indicate "Waiting for server"
+                const opacity = item.isPending ? 'opacity-70' : '';
+                
+                return `<div class="queue-item ${opacity}">${uStats.icon}${progressHtml}</div>`;
             }).join('');
         } else {
             queueDiv.classList.add('hidden');
