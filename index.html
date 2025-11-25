@@ -56,7 +56,7 @@
 <!-- === INITIALIZATION & DATA === -->
 <script>
     // --- Configuration ---
-    const VERSION = "v1.7";
+    const VERSION = "v1.8";
     const STANDARD_SPEED = 1.0; 
     
     const GAME_DATA = {
@@ -160,6 +160,11 @@
         const randomName = names[Math.floor(Math.random() * names.length)] + " " + Math.floor(Math.random() * 1000);
         const nameInput = document.getElementById('lobby-name');
         if(nameInput) nameInput.value = randomName;
+        
+        // Random Color Gen
+        const randomColor = '#' + Math.floor(Math.random()*16777215).toString(16).padStart(6, '0');
+        const colorInput = document.getElementById('player-color');
+        if(colorInput) colorInput.value = randomColor;
 
         const firebaseConfig = {
 			apiKey: "AIzaSyAcn7ZymxXYPTOhayD1DU2IOAQA7J7Ltrg",
@@ -487,14 +492,17 @@
 
                         // RESTORE SMOOTH TIMER (Anti-Snap Logic)
                         if (oldTimer !== undefined) {
-                            const delta = Math.abs(oldTimer - me.spawnTimer);
-                            // If timer hasn't drifted > 1s, keep local for smoothness. 
-                            // EXCEPTION: If server timer is 0 (done), but local is not, we should probably trust server 
-                            // UNLESS we have queue items. 
-                            if (delta < 1.0 && me.spawnTimer > 0) {
+                            const serverTimer = me.spawnTimer;
+                            // If server timer is 0 but we have pending items, ignore server timer (we are starting a queue locally)
+                            const ignoreServerZero = serverTimer === 0 && pendingQueue.length > 0;
+                            
+                            const delta = Math.abs(oldTimer - serverTimer);
+                            
+                            // Use local if drift is small OR if we are ignoring a server zero because of pending items
+                            if ((delta < 1.0 && serverTimer > 0) || ignoreServerZero) {
                                 me._clientTimer = oldTimer;
                             } else {
-                                me._clientTimer = me.spawnTimer;
+                                me._clientTimer = serverTimer;
                             }
                         } else {
                             me._clientTimer = me.spawnTimer;
@@ -1008,7 +1016,7 @@
         const reqId = localPlayerId + '_' + now + '_' + Math.random();
 
         if (data.type === 'queueUnit') {
-            if (now - lastUnitBuyTime < 200) return; 
+            // REMOVED 200ms throttle to allow fast clicking
             lastUnitBuyTime = now;
 
             if (!isHost) {
@@ -1374,7 +1382,10 @@
         return null;
     }
 
-    initApp();
+    // Move Init to DOMContentLoaded to ensure UI elements exist
+    window.addEventListener('DOMContentLoaded', () => {
+        initApp();
+    });
 
 </script>
 
