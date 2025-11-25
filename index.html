@@ -60,7 +60,7 @@
 <!-- === INITIALIZATION & DATA === -->
 <script>
     // --- Configuration ---
-    const VERSION = "v2.2";
+    const VERSION = "v2.3";
     const STANDARD_SPEED = 1.0; 
     
     const GAME_DATA = {
@@ -1170,6 +1170,12 @@
         if (timeSinceUpdate > 4000 && !document.hidden && connectionOverlay.classList.contains('hidden')) {
              connectionOverlay.classList.remove('hidden');
              connectionMsg.innerText = "Connection Lost / Host Left";
+        }
+        
+        // Cleanup expired pending requests (older than 5s) to prevent visual ghosts
+        const now = Date.now();
+        if (pendingQueue.length > 0) {
+             pendingQueue = pendingQueue.filter(p => now - p.timestamp < 5000);
         }
         
         // --- CLIENT VISUAL TIMER UPDATE ---
