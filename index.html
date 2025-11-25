@@ -52,7 +52,7 @@
 <!-- === INITIALIZATION & DATA === -->
 <script>
     // --- Configuration ---
-    const VERSION = "v1.3";
+    const VERSION = "v1.4";
     const STANDARD_SPEED = 1.0; 
     
     // Stats sourced from Age of War 1 Wiki / Game Data
@@ -466,16 +466,35 @@
                 if(d.stateJSON) {
                     const parsed = JSON.parse(d.stateJSON);
                     
-                    // FLUID QUEUE LOGIC:
-                    // Merge server players with local optimistic state
+                    // --- FLUID QUEUE LOGIC ---
+                    // 1. Capture old local timer BEFORE overwriting players
+                    const oldMe = simState.players.find(p => p.id === localPlayerId);
+                    const oldTimer = oldMe ? oldMe._clientTimer : undefined;
+
+                    // 2. Update players from server
                     simState.players = d.players;
                     
-                    // Clean pending queue
+                    // 3. Clean pending queue & Restore Timer
                     const me = simState.players.find(p => p.id === localPlayerId);
-                    if(me && me.spawnQueue) {
-                        const serverQueueIds = new Set(me.spawnQueue.map(i => i.reqId));
-                        // Remove pending items that are now on server
-                        pendingQueue = pendingQueue.filter(pending => !serverQueueIds.has(pending.reqId));
+                    if(me) {
+                        // CLEAN PENDING
+                        if(me.spawnQueue) {
+                            const serverQueueIds = new Set(me.spawnQueue.map(i => i.reqId));
+                            pendingQueue = pendingQueue.filter(pending => !serverQueueIds.has(pending.reqId));
+                        }
+
+                        // RESTORE TIMER (Anti-Snap Logic)
+                        if (oldTimer !== undefined) {
+                            const delta = Math.abs(oldTimer - me.spawnTimer);
+                            // Only snap if drift is significant (> 1s)
+                            if (delta < 1.0) {
+                                me._clientTimer = oldTimer;
+                            } else {
+                                me._clientTimer = me.spawnTimer;
+                            }
+                        } else {
+                            me._clientTimer = me.spawnTimer;
+                        }
                     }
                     
                     simState.projectiles = parsed.projectiles;
@@ -509,17 +528,6 @@
                     }
                     
                     simState.units = Array.from(renderState.units.values());
-                    
-                    // TIMER SYNC:
-                    // Only snap timer if it's drifted significantly > 1.0s
-                    // Otherwise let client simulation handle the smoothness
-                    if (me && me.spawnTimer !== undefined) {
-                         const serverTimer = me.spawnTimer;
-                         // We track a local property _clientTimer on the player object for rendering
-                         if (me._clientTimer === undefined || Math.abs(me._clientTimer - serverTimer) > 1.0) {
-                             me._clientTimer = serverTimer;
-                         }
-                    }
                 }
             });
             requestAnimationFrame(clientRenderLoop);
@@ -992,6 +1000,7 @@
         const now = Date.now();
         const reqId = localPlayerId + '_' + now + '_' + Math.random();
 
+        // 1. Queue Logic
         if (data.type === 'queueUnit') {
             if (now - lastUnitBuyTime < 500) return; 
             lastUnitBuyTime = now;
@@ -1000,8 +1009,11 @@
             const stats = getUnitStats(p.age, data.unitId);
             if (p && stats && p.gold >= stats.cost) {
                 p.gold -= stats.cost;
-                // Add to local pending queue
-                pendingQueue.push({ unitId: data.unitId, reqId: reqId, timestamp: now });
+                // Add to local pending queue ONLY IF NOT HOST
+                // Host updates immediately in processAction, so avoiding duplicates here
+                if (!isHost) {
+                    pendingQueue.push({ unitId: data.unitId, reqId: reqId, timestamp: now });
+                }
                 updateUI();
             }
         }
