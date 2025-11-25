@@ -45,6 +45,10 @@
         /* Queue items scaled up */
         .queue-item { width: 45px; height: 45px; border: 1px solid #666; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; font-size: 24px; position: relative; }
         .queue-progress { position: absolute; bottom: 0; left: 0; height: 3px; background: #0f0; transition: width 0.1s linear; }
+        
+        input[type="color"] { -webkit-appearance: none; border: none; width: 40px; height: 40px; cursor: pointer; background: none; }
+        input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+        input[type="color"]::-webkit-color-swatch { border: 2px solid #666; border-radius: 8px; }
     </style>
 </head>
 <body>
@@ -52,7 +56,7 @@
 <!-- === INITIALIZATION & DATA === -->
 <script>
     // --- Configuration ---
-    const VERSION = "v1.6";
+    const VERSION = "v1.7";
     const STANDARD_SPEED = 1.0; 
     
     const GAME_DATA = {
@@ -151,6 +155,12 @@
     const getLobbyRef = () => db.collection('artifacts').doc(appId).collection('public').doc('data').collection('lobbies');
 
     async function initApp() {
+        // Random Name Gen
+        const names = ["Warlord", "Strategist", "Commander", "General", "Captain", "Tactician", "Emperor", "King"];
+        const randomName = names[Math.floor(Math.random() * names.length)] + " " + Math.floor(Math.random() * 1000);
+        const nameInput = document.getElementById('lobby-name');
+        if(nameInput) nameInput.value = randomName;
+
         const firebaseConfig = {
 			apiKey: "AIzaSyAcn7ZymxXYPTOhayD1DU2IOAQA7J7Ltrg",
 			authDomain: "ageofffa.firebaseapp.com",
@@ -190,11 +200,12 @@
     async function createLobby() {
         const lobbyNameVal = document.getElementById('lobby-name').value || "New Game";
         const playerNameVal = document.getElementById('lobby-name').value || "Player 1";
+        const colorVal = document.getElementById('player-color').value || "#ff0000";
         
         const lobbyRef = getLobbyRef().doc();
         lobbyId = lobbyRef.id;
         
-        const initialPlayer = createPlayerObj(localPlayerId, playerNameVal, false);
+        const initialPlayer = createPlayerObj(localPlayerId, playerNameVal, false, colorVal);
         
         await lobbyRef.set({
             hostId: localPlayerId,
@@ -213,6 +224,7 @@
     async function joinLobby() {
         const id = document.getElementById('lobby-id-input').value.trim();
         const playerNameVal = document.getElementById('lobby-name').value || "Player";
+        const colorVal = document.getElementById('player-color').value || "#00ff00";
 
         if(!id) return alert("Enter Lobby ID");
         
@@ -222,7 +234,7 @@
         if(!doc.exists) return alert("Lobby not found");
         if(doc.data().status !== 'waiting') return alert("Game already started");
 
-        const newPlayer = createPlayerObj(localPlayerId, playerNameVal, false);
+        const newPlayer = createPlayerObj(localPlayerId, playerNameVal, false, colorVal);
         
         await db.runTransaction(async (t) => {
             const fresh = await t.get(lobbyRef);
@@ -236,7 +248,7 @@
         enterLobbyUI(lobbyId, false);
     }
 
-    function createPlayerObj(id, name, isBot) {
+    function createPlayerObj(id, name, isBot, color) {
         return {
             id: id,
             name: name,
@@ -248,7 +260,7 @@
             maxHp: GAME_DATA.ages[0].baseHp,
             turrets: [], 
             targetId: null, 
-            color: `hsl(${Math.random() * 360}, 70%, 50%)`,
+            color: color || `hsl(${Math.random() * 360}, 70%, 50%)`,
             spawnQueue: [], 
             spawnTimer: 0, 
             specialCooldown: 0
@@ -321,7 +333,7 @@
         const players = doc.data().players;
         if(players.length >= 10) return alert("Lobby full");
         
-        const bot = createPlayerObj('bot_' + Date.now(), "Bot " + Math.floor(Math.random()*100), true);
+        const bot = createPlayerObj('bot_' + Date.now(), "Bot " + Math.floor(Math.random()*100), true, `hsl(${Math.random() * 360}, 70%, 50%)`);
         players.push(bot);
         await lobbyRef.update({ players });
     }
@@ -468,16 +480,17 @@
                     const me = simState.players.find(p => p.id === localPlayerId);
                     if(me) {
                         // RECONCILE PENDING QUEUE
-                        // Remove items that are confirmed in server queue
                         if(me.spawnQueue) {
                             const serverQueueIds = new Set(me.spawnQueue.map(i => i.reqId));
                             pendingQueue = pendingQueue.filter(pending => !serverQueueIds.has(pending.reqId));
                         }
 
-                        // RESTORE SMOOTH TIMER
+                        // RESTORE SMOOTH TIMER (Anti-Snap Logic)
                         if (oldTimer !== undefined) {
                             const delta = Math.abs(oldTimer - me.spawnTimer);
-                            // Only snap if drift > 1s or timer was 0
+                            // If timer hasn't drifted > 1s, keep local for smoothness. 
+                            // EXCEPTION: If server timer is 0 (done), but local is not, we should probably trust server 
+                            // UNLESS we have queue items. 
                             if (delta < 1.0 && me.spawnTimer > 0) {
                                 me._clientTimer = oldTimer;
                             } else {
@@ -862,7 +875,6 @@
         });
     }
 
-    // FIX: Spawn Calculation based on Angle to Center
     function spawnUnitReal(playerId, unitId) {
         const p = simState.players.find(x => x.id === playerId);
         const stats = getUnitStats(p.age, unitId);
@@ -871,7 +883,6 @@
         let spawnY = p.y;
         
         if (p.targetId) {
-            // Spawn towards target enemy
             const target = simState.players.find(tp => tp.id === p.targetId);
             if (target) {
                 const a = Math.atan2(target.y - p.y, target.x - p.x);
@@ -879,7 +890,6 @@
                 spawnY += Math.sin(a) * (GAME_DATA.baseRadius + 20);
             }
         } else {
-             // FIX: Spawn towards center (0,0)
              const a = Math.atan2(-p.y, -p.x);
              spawnX += Math.cos(a) * (GAME_DATA.baseRadius + 20);
              spawnY += Math.sin(a) * (GAME_DATA.baseRadius + 20);
@@ -971,7 +981,6 @@
         const dt = (time - lastClientTime) / 1000;
         lastClientTime = time;
         
-        // Disconnect Logic using Time Since Last Update
         const timeSinceUpdate = Date.now() - lastUpdateReceived;
         const connectionOverlay = document.getElementById('connection-overlay');
         const connectionMsg = document.getElementById('connection-msg');
@@ -999,12 +1008,9 @@
         const reqId = localPlayerId + '_' + now + '_' + Math.random();
 
         if (data.type === 'queueUnit') {
-            // Increased Debounce slightly for safety against double-clicks
             if (now - lastUnitBuyTime < 200) return; 
             lastUnitBuyTime = now;
 
-            // OPTIMISTIC UPDATE: ONLY FOR NON-HOSTS
-            // Host updates via processAction instantly, so no need to simulate gold deduction
             if (!isHost) {
                 const p = simState.players.find(x => x.id === localPlayerId);
                 const stats = getUnitStats(p.age, data.unitId);
@@ -1012,7 +1018,7 @@
                     const wasQueueEmpty = (!p.spawnQueue || p.spawnQueue.length === 0) && pendingQueue.length === 0;
                     pendingQueue.push({ unitId: data.unitId, reqId: reqId, timestamp: now, cost: stats.cost });
                     
-                    // Fix for "Empty Bar": Initialize timer immediately on client
+                    // Initialize timer immediately if starting new queue
                     if (wasQueueEmpty) {
                         p._clientTimer = stats.delay;
                     }
@@ -1148,7 +1154,6 @@
             drawBar(u.x, u.y - 48, 48, 8, u.hp, u.maxHp, '#0f0');
         });
 
-        // --- CLIENT SIDE PREDICTION: PROJECTILES ---
         simState.projectiles.forEach(p => {
             if (!isHost) {
                 p.x += p.vx * dt * 400; 
@@ -1212,8 +1217,6 @@
         const ageData = GAME_DATA.ages[ageIndex];
         const nextAge = GAME_DATA.ages[ageIndex + 1];
 
-        // --- PREDICTED GOLD (Yo-Yo Fix) ---
-        // Start with server gold, subtract pending local requests
         let displayGold = p.gold;
         if (!isHost) {
             pendingQueue.forEach(req => { displayGold -= req.cost; });
@@ -1229,14 +1232,26 @@
 
         if (combinedQueue.length > 0) {
             queueDiv.classList.remove('hidden');
+            
+            // Track queue head to detect transitions
+            const currentHeadId = combinedQueue[0].unitId;
+            
+            // If queue advanced, force reset local timer to full duration of new head
+            if (p._lastQueueHead !== currentHeadId) {
+                p._lastQueueHead = currentHeadId;
+                const newHeadStats = getUnitStats(p.age, currentHeadId);
+                if (newHeadStats) p._clientTimer = newHeadStats.delay;
+            }
+
             queueDiv.innerHTML = combinedQueue.map((item, idx) => {
                 const uStats = getUnitStats(p.age, item.unitId);
                 if (!uStats) return '';
                 
                 let progressHtml = '';
                 if (idx === 0) {
+                    // Explicit fallback to max delay if timer is missing
                     const t = p._clientTimer !== undefined ? p._clientTimer : (p.spawnTimer || uStats.delay);
-                    const pct = ((uStats.delay - t) / uStats.delay) * 100;
+                    const pct = Math.min(100, Math.max(0, ((uStats.delay - t) / uStats.delay) * 100));
                     progressHtml = `<div class="queue-progress" style="width: ${pct}%"></div>`;
                 }
                 
@@ -1245,6 +1260,7 @@
         } else {
             queueDiv.classList.add('hidden');
             queueDiv.innerHTML = '';
+            p._lastQueueHead = null; // Reset tracker
         }
 
 
@@ -1254,7 +1270,6 @@
         if (currentRenderedAge !== ageIndex) {
             currentRenderedAge = ageIndex;
             
-            // Reverted to onclick for reliability, debounce handles spam
             unitContainer.innerHTML = ageData.units.map(u => `
                 <div id="btn-unit-${u.id}" class="unit-card relative w-24 h-24 rounded cursor-pointer flex flex-col items-center justify-center" 
                      onclick="sendAction({type: 'queueUnit', unitId: '${u.id}'})">
@@ -1377,7 +1392,13 @@
         <div id="auth-status" class="mb-6 text-base text-yellow-500 animate-pulse">Connecting...</div>
 
         <div class="flex flex-col gap-4">
-            <input id="lobby-name" type="text" placeholder="Your Name" class="bg-gray-800 border border-gray-600 p-4 rounded text-white text-xl" value="Commander">
+            <input id="lobby-name" type="text" placeholder="Your Name" class="bg-gray-800 border border-gray-600 p-4 rounded text-white text-xl">
+            
+            <div class="flex items-center gap-4 bg-gray-800 p-3 rounded border border-gray-600">
+                <span class="text-lg text-gray-300">Base Color:</span>
+                <input id="player-color" type="color" value="#ff0000" class="flex-1">
+            </div>
+
             <button onclick="createLobby()" class="btn-primary w-full py-4 text-xl">Create New Game</button>
             
             <div class="flex gap-2 mt-4">
