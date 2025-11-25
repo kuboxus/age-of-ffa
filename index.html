@@ -60,7 +60,7 @@
 <!-- === INITIALIZATION & DATA === -->
 <script>
     // --- Configuration ---
-    const VERSION = "v1.9";
+    const VERSION = "v2.0";
     const STANDARD_SPEED = 1.0; 
     
     const GAME_DATA = {
@@ -278,11 +278,17 @@
     }
 
     async function joinLobby() {
-        const id = document.getElementById('lobby-id-input').value.trim().toUpperCase();
+        let id = document.getElementById('lobby-id-input').value.trim();
         const playerNameVal = document.getElementById('lobby-name').value || "Player";
         const colorVal = document.getElementById('player-color').value || "#00ff00";
 
         if(!id) return alert("Enter Lobby ID");
+
+        // Only auto-uppercase if it looks like a short code (<= 8 chars).
+        // This allows joining legacy lobbies that have long, case-sensitive IDs.
+        if (id.length <= 8) {
+            id = id.toUpperCase();
+        }
         
         const lobbyRef = getLobbyRef().doc(id);
         const doc = await lobbyRef.get();
