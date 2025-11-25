@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Age of War: FFA Multiplayer</title>
+    <title>Age of War: Multiplayer</title>
     
     <!-- Firebase Imports -->
     <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-app-compat.js"></script>
@@ -41,7 +41,7 @@
 
         #lobby-screen { background: url('data:image/svg+xml;utf8,<svg width="100" height="100" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><g fill="%23333"><path d="M0 0h50v50H0zM50 50h50v50H50z"/></g></svg>'); }
         
-        .glass-panel { background: rgba(20, 20, 20, 0.85); backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 4px 30px rgba(0,0,0,0.5); }
+        .glass-panel { background: rgba(20, 20, 20, 0.9); backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 4px 30px rgba(0,0,0,0.5); }
         
         /* Queue items scaled up */
         .queue-item { width: 45px; height: 45px; border: 1px solid #666; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; font-size: 24px; position: relative; }
@@ -53,6 +53,10 @@
 
         .lobby-list-item { cursor: pointer; transition: background 0.2s; }
         .lobby-list-item:hover { background: rgba(255,255,255,0.1); }
+        
+        /* Settings Inputs */
+        .setting-input { background: #333; border: 1px solid #555; color: white; padding: 4px; border-radius: 4px; width: 100%; }
+        .setting-label { font-size: 0.85rem; color: #aaa; margin-bottom: 2px; display: block; }
     </style>
 </head>
 <body>
@@ -60,15 +64,35 @@
 <!-- === INITIALIZATION & DATA === -->
 <script>
     // --- Configuration ---
-    const VERSION = "v2.4";
-    const STANDARD_SPEED = 1.0; 
+    const VERSION = "v3.0 Teams";
+    
+    // Default Settings
+    const DEFAULT_SETTINGS = {
+        gameSpeed: 1.0,
+        unitCostMult: 1.0,
+        goldMult: 1.0,
+        expMult: 1.0,
+        baseHp: 2500,
+        xpReqMult: 1.0,
+        mode: 'FFA', // 'FFA' or 'TEAMS'
+        teamLayout: 'ADJACENT' // 'ADJACENT' or 'CHECKER'
+    };
+
+    const TEAM_COLORS = {
+        0: '#3b82f6', // Blue Team
+        1: '#ef4444'  // Red Team
+    };
+
+    const TEAM_NAMES = {
+        0: 'Blue Team',
+        1: 'Red Team'
+    };
     
     const GAME_DATA = {
         ages: [
             {
                 name: "Stone Age",
                 xpReq: 0,
-                baseHp: 2500,
                 special: { name: "Meteor Strike", damage: 200, radius: 100, cooldown: 60 },
                 units: [
                     { id: 'u1_1', name: "Club Man", icon: "🪨", cost: 15, delay: 1.0, hp: 55, meleeDmg: 16, rangedDmg: 0, meleeRange: 20, rangedRange: 0 },
@@ -80,7 +104,6 @@
             {
                 name: "Medieval Age",
                 xpReq: 1000,
-                baseHp: 2500,
                 special: { name: "Arrow Rain", damage: 400, radius: 120, cooldown: 70 },
                 units: [
                     { id: 'u2_1', name: "Sword Man", icon: "⚔️", cost: 50, delay: 2.0, hp: 100, meleeDmg: 32, rangedDmg: 0, meleeRange: 20, rangedRange: 0 },
@@ -92,7 +115,6 @@
             {
                 name: "Renaissance",
                 xpReq: 4000,
-                baseHp: 2500,
                 special: { name: "Artillery Strike", damage: 800, radius: 150, cooldown: 80 },
                 units: [
                     { id: 'u3_1', name: "Duelist", icon: "🗡️", cost: 200, delay: 3.0, hp: 200, meleeDmg: 79, rangedDmg: 0, meleeRange: 25, rangedRange: 0 },
@@ -104,7 +126,6 @@
             {
                 name: "Modern Age",
                 xpReq: 16000,
-                baseHp: 2500,
                 special: { name: "Airstrike", damage: 1500, radius: 180, cooldown: 90 },
                 units: [
                     { id: 'u4_1', name: "Melee Infantry", icon: "🎖️", cost: 1500, delay: 3.0, hp: 300, meleeDmg: 100, rangedDmg: 0, meleeRange: 25, rangedRange: 0 },
@@ -116,7 +137,6 @@
             {
                 name: "Future Age",
                 xpReq: 60000,
-                baseHp: 2500,
                 special: { name: "Ion Cannon", damage: 6000, radius: 250, cooldown: 120 },
                 units: [
                     { id: 'u5_1', name: "Alien Blade", icon: "👽", cost: 5000, delay: 3.0, hp: 1000, meleeDmg: 250, rangedDmg: 0, meleeRange: 40, rangedRange: 0 },
@@ -139,45 +159,36 @@
     let lobbyId = null;
     let isHost = false;
     let localPlayerId = null;
-    let gameLoopRef = null;
     let gameState = null;
     let canvas, ctx;
     let camera = { x: 0, y: 0, zoom: 0.8 };
     let input = { keys: {}, mouse: { x: 0, y: 0, down: false }, targetId: null, mode: 'select' }; 
     let lastUnitBuyTime = 0; 
     let lastUpdateReceived = Date.now(); 
+    let currentSettings = { ...DEFAULT_SETTINGS };
     
     // --- NETWORKING & PREDICTION STATE ---
     let renderState = {
         units: new Map(), // Map<unitId, {x, y, ...targetProps}>
-        projectiles: [] // Local sim
+        projectiles: [] 
     };
     
-    // pendingQueue items: { unitId, reqId, timestamp, cost }
     let pendingQueue = []; 
+    let lobbyUnsub = null;
     
     const getLobbyRef = () => db.collection('artifacts').doc(appId).collection('public').doc('data').collection('lobbies');
 
     async function initApp() {
-        // Random Name Gen
         const names = ["Warlord", "Strategist", "Commander", "General", "Captain", "Tactician", "Emperor", "King"];
         const randomName = names[Math.floor(Math.random() * names.length)] + " " + Math.floor(Math.random() * 1000);
         const nameInput = document.getElementById('lobby-name');
         if(nameInput) nameInput.value = randomName;
         
-        // Random Color Gen
         const randomColor = '#' + Math.floor(Math.random()*16777215).toString(16).padStart(6, '0');
         const colorInput = document.getElementById('player-color');
         if(colorInput) colorInput.value = randomColor;
 
-        const firebaseConfig = {
-			apiKey: "AIzaSyAhVZB64ov5te0w5he0zeCNuOZuy7jUpuI",
-			authDomain: "ageofffa.firebaseapp.com",
-			projectId: "ageofffa",
-			storageBucket: "ageofffa.firebasestorage.app",
-			messagingSenderId: "461491837298",
-			appId: "1:461491837298:web:daebae2fb46fe3eb3ee5eb"
-		};
+        const firebaseConfig = JSON.parse(__firebase_config);
         if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
         db = firebase.firestore();
         auth = firebase.auth();
@@ -201,7 +212,6 @@
         });
     }
     
-    // --- Active Lobby Browser ---
     function startLobbyBrowser() {
         getLobbyRef().onSnapshot(snapshot => {
             const listEl = document.getElementById('active-lobbies-list');
@@ -209,7 +219,6 @@
             
             listEl.innerHTML = '';
             
-            // Filter and sort in memory as per constraints
             const activeLobbies = [];
             snapshot.forEach(doc => {
                 const data = doc.data();
@@ -226,9 +235,11 @@
             activeLobbies.forEach(lobby => {
                 const el = document.createElement('div');
                 el.className = 'lobby-list-item bg-gray-800 border border-gray-600 p-2 rounded mb-2 flex justify-between items-center';
+                const modeLabel = lobby.settings?.mode === 'TEAMS' ? '<span class="text-blue-400 font-bold ml-2">TEAMS</span>' : '<span class="text-green-400 font-bold ml-2">FFA</span>';
+                
                 el.innerHTML = `
                     <div>
-                        <div class="font-bold text-yellow-500">${lobby.name}</div>
+                        <div class="font-bold text-yellow-500">${lobby.name} ${modeLabel}</div>
                         <div class="text-xs text-gray-400">Players: ${lobby.players.length}</div>
                     </div>
                     <button class="bg-blue-600 text-xs px-2 py-1 rounded">Join</button>
@@ -254,13 +265,12 @@
         const colorVal = document.getElementById('player-color').value || "#ff0000";
         const isPrivate = document.getElementById('is-private-lobby').checked;
         
-        // Generate Short Code
         const shortCode = Math.random().toString(36).substring(2, 8).toUpperCase();
         
         const lobbyRef = getLobbyRef().doc(shortCode);
         lobbyId = shortCode;
         
-        const initialPlayer = createPlayerObj(localPlayerId, playerNameVal, false, colorVal);
+        const initialPlayer = createPlayerObj(localPlayerId, playerNameVal, false, colorVal, 0);
         
         await lobbyRef.set({
             hostId: localPlayerId,
@@ -268,6 +278,7 @@
             status: 'waiting',
             isPrivate: isPrivate,
             players: [initialPlayer],
+            settings: { ...DEFAULT_SETTINGS },
             createdAt: firebase.firestore.FieldValue.serverTimestamp(),
             lastHeartbeat: firebase.firestore.FieldValue.serverTimestamp(),
             stateJSON: JSON.stringify({ units: [], projectiles: [], effects: [] }),
@@ -283,10 +294,7 @@
         const colorVal = document.getElementById('player-color').value || "#00ff00";
 
         if(!id) return alert("Enter Lobby ID");
-
-        if (id.length <= 8) {
-            id = id.toUpperCase();
-        }
+        if (id.length <= 8) id = id.toUpperCase();
         
         const lobbyRef = getLobbyRef().doc(id);
         const doc = await lobbyRef.get();
@@ -294,7 +302,13 @@
         if(!doc.exists) return alert("Lobby not found");
         if(doc.data().status !== 'waiting') return alert("Game already started");
 
-        const newPlayer = createPlayerObj(localPlayerId, playerNameVal, false, colorVal);
+        const data = doc.data();
+        // Auto assign team based on count (simple balancing)
+        const team0Count = data.players.filter(p => p.teamId === 0).length;
+        const team1Count = data.players.filter(p => p.teamId === 1).length;
+        const assignedTeam = team0Count <= team1Count ? 0 : 1;
+
+        const newPlayer = createPlayerObj(localPlayerId, playerNameVal, false, colorVal, assignedTeam);
         
         await db.runTransaction(async (t) => {
             const fresh = await t.get(lobbyRef);
@@ -310,7 +324,7 @@
         enterLobbyUI(lobbyId, false);
     }
 
-    function createPlayerObj(id, name, isBot, color) {
+    function createPlayerObj(id, name, isBot, color, teamId) {
         return {
             id: id,
             name: name,
@@ -318,27 +332,39 @@
             age: 0,
             xp: 0,
             gold: 300,
-            hp: GAME_DATA.ages[0].baseHp,
-            maxHp: GAME_DATA.ages[0].baseHp,
+            hp: 2500,
+            maxHp: 2500,
             turrets: [], 
             targetId: null, 
             color: color || `hsl(${Math.random() * 360}, 70%, 50%)`,
             spawnQueue: [], 
             spawnTimer: 0, 
-            _visualTimer: 0, // NEW: Client-side smooth timer
-            specialCooldown: 0
+            _visualTimer: 0, 
+            specialCooldown: 0,
+            teamId: teamId
         };
     }
     
-    async function kickPlayer(targetId) {
-        if (!isHost || !lobbyId) return;
+    async function switchTeam(teamId) {
+        if (!lobbyId) return;
         const lobbyRef = getLobbyRef().doc(lobbyId);
         
         await db.runTransaction(async (t) => {
+            const doc = await t.get(lobbyRef);
+            if (!doc.exists) return;
+            const players = doc.data().players;
+            const me = players.find(p => p.id === localPlayerId);
+            if (me) me.teamId = teamId;
+            t.update(lobbyRef, { players: players });
+        });
+    }
+
+    async function kickPlayer(targetId) {
+        if (!isHost || !lobbyId) return;
+        const lobbyRef = getLobbyRef().doc(lobbyId);
+        await db.runTransaction(async (t) => {
              const doc = await t.get(lobbyRef);
-             if (!doc.exists) return;
-             const data = doc.data();
-             const newPlayers = data.players.filter(p => p.id !== targetId);
+             const newPlayers = doc.data().players.filter(p => p.id !== targetId);
              t.update(lobbyRef, { players: newPlayers });
         });
     }
@@ -346,7 +372,6 @@
     async function leaveLobby() {
         if (!lobbyId) return;
         const lobbyRef = getLobbyRef().doc(lobbyId);
-        
         if (lobbyUnsub) lobbyUnsub();
         lobbyUnsub = null;
         
@@ -354,111 +379,199 @@
              const doc = await t.get(lobbyRef);
              if (!doc.exists) return;
              const data = doc.data();
-             
-             // Remove self
              const newPlayers = data.players.filter(p => p.id !== localPlayerId);
-             
              if (newPlayers.length === 0) {
-                 // Delete if empty
                  t.delete(lobbyRef);
              } else {
                  let updates = { players: newPlayers };
-                 // Pass Host if host left
-                 if (data.hostId === localPlayerId) {
-                     updates.hostId = newPlayers[0].id; // Give to next player
-                 }
+                 if (data.hostId === localPlayerId) updates.hostId = newPlayers[0].id; 
                  t.update(lobbyRef, updates);
              }
         });
-        
         location.reload();
     }
 
-    let hasSeenSelfInLobby = false; 
+    // --- Settings Logic ---
+    let settingsDebounceTimer = null;
+    function onSettingChange() {
+        if(!isHost) return;
+        const newSettings = {
+            gameSpeed: parseFloat(document.getElementById('set-speed').value),
+            unitCostMult: parseFloat(document.getElementById('set-cost').value),
+            goldMult: parseFloat(document.getElementById('set-gold').value),
+            expMult: parseFloat(document.getElementById('set-exp').value),
+            baseHp: parseInt(document.getElementById('set-hp').value),
+            xpReqMult: parseFloat(document.getElementById('set-xpreq').value),
+            mode: document.getElementById('set-mode').value,
+            teamLayout: document.getElementById('set-team-layout').value
+        };
+        
+        // Immediate UI update for host
+        updateSettingsUI(newSettings);
+
+        clearTimeout(settingsDebounceTimer);
+        settingsDebounceTimer = setTimeout(() => {
+            getLobbyRef().doc(lobbyId).update({ settings: newSettings });
+        }, 500);
+    }
+    
+    function resetSettings() {
+        if(!isHost) return;
+        document.getElementById('set-speed').value = DEFAULT_SETTINGS.gameSpeed;
+        document.getElementById('set-cost').value = DEFAULT_SETTINGS.unitCostMult;
+        document.getElementById('set-gold').value = DEFAULT_SETTINGS.goldMult;
+        document.getElementById('set-exp').value = DEFAULT_SETTINGS.expMult;
+        document.getElementById('set-hp').value = DEFAULT_SETTINGS.baseHp;
+        document.getElementById('set-xpreq').value = DEFAULT_SETTINGS.xpReqMult;
+        document.getElementById('set-mode').value = DEFAULT_SETTINGS.mode;
+        document.getElementById('set-team-layout').value = DEFAULT_SETTINGS.teamLayout;
+        onSettingChange();
+    }
+
+    function updateSettingsUI(settings) {
+        currentSettings = settings;
+        
+        // If not host, update input values to match server
+        if (!isHost) {
+            document.getElementById('set-speed').value = settings.gameSpeed;
+            document.getElementById('set-cost').value = settings.unitCostMult;
+            document.getElementById('set-gold').value = settings.goldMult;
+            document.getElementById('set-exp').value = settings.expMult;
+            document.getElementById('set-hp').value = settings.baseHp;
+            document.getElementById('set-xpreq').value = settings.xpReqMult;
+            document.getElementById('set-mode').value = settings.mode;
+            document.getElementById('set-team-layout').value = settings.teamLayout;
+            
+            // Disable inputs
+            document.querySelectorAll('.setting-input').forEach(el => el.disabled = true);
+            document.getElementById('reset-settings-btn').classList.add('hidden');
+        } else {
+            document.querySelectorAll('.setting-input').forEach(el => el.disabled = false);
+            document.getElementById('reset-settings-btn').classList.remove('hidden');
+        }
+
+        // Show/Hide Team Layout based on Mode
+        const teamLayoutGroup = document.getElementById('group-team-layout');
+        if (settings.mode === 'TEAMS') {
+            teamLayoutGroup.classList.remove('hidden');
+        } else {
+            teamLayoutGroup.classList.add('hidden');
+        }
+    }
 
     function enterLobbyUI(id, host) {
         isHost = host;
         showScreen('waiting-room');
         document.getElementById('display-lobby-id').innerText = id;
-        if(!host) document.getElementById('start-btn').classList.add('hidden');
-        if(!host) document.getElementById('add-bot-btn').classList.add('hidden');
         
-        hasSeenSelfInLobby = false; 
-
-        const leaveBtn = document.getElementById('leave-btn');
-        if (host) {
+        if(isHost) {
+            document.getElementById('start-btn').classList.remove('hidden');
+            document.getElementById('add-bot-btn').classList.remove('hidden');
             document.getElementById('leave-msg').innerText = "Leaving will pass Host to next player.";
         } else {
+            document.getElementById('start-btn').classList.add('hidden');
+            document.getElementById('add-bot-btn').classList.add('hidden');
             document.getElementById('leave-msg').innerText = "";
         }
 
         lobbyUnsub = getLobbyRef().doc(id).onSnapshot(doc => {
             if(!doc.exists) {
-                // Lobby deleted
                 alert("Lobby has been closed.");
                 location.reload();
                 return;
             }
             const data = doc.data();
             
-            // Check if kicked with guard
-            const amIIn = data.players.find(p => p.id === localPlayerId);
-            if (amIIn) {
-                hasSeenSelfInLobby = true;
-            } else if (hasSeenSelfInLobby) {
-                // Only kick if we were definitely there before
-                alert("You have been kicked from the lobby.");
+            // Check kick
+            if (!data.players.find(p => p.id === localPlayerId)) {
+                alert("You have been kicked.");
                 location.reload();
                 return;
             }
 
-            // Update Host status (in case host migrated)
+            // Update Host status
             isHost = (data.hostId === localPlayerId);
-            if(isHost) {
-                document.getElementById('start-btn').classList.remove('hidden');
-                document.getElementById('add-bot-btn').classList.remove('hidden');
-                document.getElementById('leave-msg').innerText = "Leaving will pass Host to next player.";
-            } else {
-                document.getElementById('start-btn').classList.add('hidden');
-                document.getElementById('add-bot-btn').classList.add('hidden');
-                document.getElementById('leave-msg').innerText = "";
+            
+            // Sync Settings
+            if (data.settings) {
+                updateSettingsUI(data.settings);
             }
 
+            // Render Player List
             const list = document.getElementById('player-list');
-            list.innerHTML = data.players.map(p => {
-                let kickBtn = '';
-                if (isHost && p.id !== localPlayerId) {
-                    kickBtn = `<button onclick="kickPlayer('${p.id}')" class="btn-danger ml-2">X</button>`;
-                }
+            list.innerHTML = '';
+            
+            const isTeamMode = currentSettings.mode === 'TEAMS';
+            
+            const renderPlayer = (p) => {
+                let kickBtn = (isHost && p.id !== localPlayerId) ? `<button onclick="kickPlayer('${p.id}')" class="btn-danger ml-2">X</button>` : '';
                 
+                let switchBtn = '';
+                if (data.status === 'waiting' && isTeamMode && p.id === localPlayerId) {
+                    const otherTeam = p.teamId === 0 ? 1 : 0;
+                    const otherName = TEAM_NAMES[otherTeam];
+                    switchBtn = `<button onclick="switchTeam(${otherTeam})" class="text-xs bg-gray-600 px-2 py-1 ml-2 rounded hover:bg-gray-500">Switch to ${otherName}</button>`;
+                }
+
+                // If team mode, override color with team color
+                const displayColor = isTeamMode ? TEAM_COLORS[p.teamId] : p.color;
+
                 return `
-                <div class="flex items-center justify-between bg-gray-700 p-2 rounded mb-1">
+                <div class="flex items-center justify-between bg-gray-700 p-2 rounded mb-1 border-l-4" style="border-left-color: ${displayColor}">
                     <div class="flex items-center gap-2">
-                        <div class="w-3 h-3 rounded-full" style="background:${p.color}"></div>
                         <span>${p.name} ${p.isBot ? '(BOT)' : ''}</span>
                     </div>
                     <div class="flex items-center">
-                        ${p.id === data.hostId ? '<span class="text-xs text-yellow-500 mr-2">HOST</span>' : ''}
-                        ${p.id === localPlayerId ? '<span class="text-xs bg-blue-600 px-1 rounded">YOU</span>' : ''}
+                        ${switchBtn}
+                        ${p.id === data.hostId ? '<span class="text-xs text-yellow-500 mr-2 ml-2">HOST</span>' : ''}
+                        ${p.id === localPlayerId ? '<span class="text-xs bg-blue-600 px-1 rounded ml-1">YOU</span>' : ''}
                         ${kickBtn}
                     </div>
                 </div>`;
-            }).join('');
+            };
+
+            if (isTeamMode) {
+                // Render by Team
+                list.innerHTML += `<div class="text-blue-400 font-bold mt-2 border-b border-gray-600">Blue Team</div>`;
+                data.players.filter(p => p.teamId === 0).forEach(p => list.innerHTML += renderPlayer(p));
+                
+                list.innerHTML += `<div class="text-red-400 font-bold mt-4 border-b border-gray-600">Red Team</div>`;
+                data.players.filter(p => p.teamId === 1).forEach(p => list.innerHTML += renderPlayer(p));
+            } else {
+                data.players.forEach(p => list.innerHTML += renderPlayer(p));
+            }
 
             if(data.status === 'playing' || data.status === 'paused') {
                 startGame(data);
             } else if (data.status === 'finished') {
                 if (gameState !== 'finished') {
                     gameState = 'finished';
-                    const amIWinner = data.winner?.id === localPlayerId;
-                    const resultText = amIWinner ? "VICTORY!" : "DEFEAT";
-                    const resultColor = amIWinner ? "text-yellow-400" : "text-red-500";
+                    let resultText = "GAME OVER";
+                    let resultColor = "text-white";
                     
+                    if (isTeamMode) {
+                        const myTeam = data.players.find(p => p.id === localPlayerId)?.teamId;
+                        const winTeam = data.winnerTeam;
+                        if (winTeam !== undefined) {
+                            if (winTeam === myTeam) {
+                                resultText = "VICTORY!";
+                                resultColor = "text-yellow-400";
+                            } else {
+                                resultText = "DEFEAT";
+                                resultColor = "text-red-500";
+                            }
+                        }
+                    } else {
+                        const amIWinner = data.winner?.id === localPlayerId;
+                        resultText = amIWinner ? "VICTORY!" : "DEFEAT";
+                        resultColor = amIWinner ? "text-yellow-400" : "text-red-500";
+                    }
+
                     const overlay = document.createElement('div');
-                    overlay.className = "absolute inset-0 bg-black bg-opacity-80 flex flex-col items-center justify-center z-50 pointer-events-auto";
+                    overlay.className = "absolute inset-0 bg-black bg-opacity-90 flex flex-col items-center justify-center z-50 pointer-events-auto";
                     overlay.innerHTML = `
                         <h1 class="text-6xl font-bold ${resultColor} mb-4">${resultText}</h1>
-                        <p class="text-2xl text-white mb-8">Winner: ${data.winner?.name || 'Unknown'}</p>
+                        <p class="text-2xl text-white mb-8">${data.winReason || ''}</p>
                         <button onclick="location.reload()" class="btn-primary">Back to Menu</button>
                     `;
                     document.body.appendChild(overlay);
@@ -466,7 +579,7 @@
             }
         });
     }
-
+    
     function copyLobbyId() {
         const idText = document.getElementById('display-lobby-id').innerText;
         const tempInput = document.createElement('input');
@@ -476,9 +589,8 @@
         document.execCommand('copy');
         document.body.removeChild(tempInput);
         const btn = document.getElementById('copy-box');
-        const originalBg = btn.style.background;
         btn.style.background = '#225522';
-        setTimeout(() => { btn.style.background = originalBg; }, 200);
+        setTimeout(() => { btn.style.background = ''; }, 200);
     }
 
     async function addBot() {
@@ -488,7 +600,12 @@
         const players = doc.data().players;
         if(players.length >= 10) return alert("Lobby full");
         
-        const bot = createPlayerObj('bot_' + Date.now(), "Bot " + Math.floor(Math.random()*100), true, `hsl(${Math.random() * 360}, 70%, 50%)`);
+        // Auto assign team for bot
+        const t0 = players.filter(p => p.teamId === 0).length;
+        const t1 = players.filter(p => p.teamId === 1).length;
+        const botTeam = t0 <= t1 ? 0 : 1;
+
+        const bot = createPlayerObj('bot_' + Date.now(), "Bot " + Math.floor(Math.random()*100), true, null, botTeam);
         players.push(bot);
         await lobbyRef.update({ players });
     }
@@ -500,12 +617,7 @@
 
     // --- Game Logic ---
 
-    let simState = {
-        players: [],
-        units: [], 
-        projectiles: [], 
-        effects: [] 
-    };
+    let simState = { players: [], units: [], projectiles: [], effects: [] };
     
     function startGame(initialData) {
         if(lobbyUnsub) lobbyUnsub();
@@ -517,61 +629,125 @@
         window.addEventListener('resize', resizeCanvas);
 
         simState.players = initialData.players;
+        currentSettings = initialData.settings || DEFAULT_SETTINGS;
         
-        const radius = GAME_DATA.mapRadius * 0.8;
-        const center = { x: 0, y: 0 };
-        const angleStep = (Math.PI * 2) / simState.players.length;
-        
-        simState.players.forEach((p, i) => {
-            const angle = angleStep * i;
-            p.x = center.x + Math.cos(angle) * radius;
-            p.y = center.y + Math.sin(angle) * radius;
-            const ageData = GAME_DATA.ages[p.age];
-            if(ageData && ageData.turret) {
-                 p.turrets = [{ id: 'base_turret', typeId: ageData.turret.id, cooldown: 0, slot: 0 }];
-            }
-            // Ensure visual timer init
-            if(p._visualTimer === undefined) p._visualTimer = 0;
+        // Apply Settings to players (HP)
+        simState.players.forEach(p => {
+             // Only reset maxHp if starting fresh, or sync it
+             if (initialData.status === 'playing' && p.hp === p.maxHp) {
+                 p.maxHp = currentSettings.baseHp;
+                 p.hp = currentSettings.baseHp;
+             }
+             
+             if (currentSettings.mode === 'TEAMS') {
+                 p.color = TEAM_COLORS[p.teamId];
+             }
         });
 
-        // Input Listeners
+        // Calculate positions
+        const radius = GAME_DATA.mapRadius * 0.8;
+        const center = { x: 0, y: 0 };
+        
+        if (currentSettings.mode === 'TEAMS') {
+            const team0 = simState.players.filter(p => p.teamId === 0);
+            const team1 = simState.players.filter(p => p.teamId === 1);
+            
+            if (currentSettings.teamLayout === 'CHECKER') {
+                // Interleave: A, B, A, B
+                const sorted = [];
+                const maxLen = Math.max(team0.length, team1.length);
+                for(let i=0; i<maxLen; i++) {
+                    if(team0[i]) sorted.push(team0[i]);
+                    if(team1[i]) sorted.push(team1[i]);
+                }
+                const angleStep = (Math.PI * 2) / sorted.length;
+                sorted.forEach((p, i) => {
+                    const angle = angleStep * i;
+                    p.x = center.x + Math.cos(angle) * radius;
+                    p.y = center.y + Math.sin(angle) * radius;
+                    initTurret(p);
+                });
+            } else {
+                // ADJACENT: Team 0 on left/top, Team 1 on right/bottom
+                // We split circle: 0-PI for Team 0, PI-2PI for Team 1
+                const assignArc = (list, startAngle, endAngle) => {
+                    if (list.length === 0) return;
+                    const span = endAngle - startAngle;
+                    // Distribute evenly within the arc
+                    // If 1 player, put in middle of arc. If multiple, spread.
+                    const step = span / (list.length + 1); 
+                    list.forEach((p, i) => {
+                        const angle = startAngle + step * (i + 1);
+                        p.x = center.x + Math.cos(angle) * radius;
+                        p.y = center.y + Math.sin(angle) * radius;
+                        initTurret(p);
+                    });
+                };
+                
+                assignArc(team0, Math.PI/2, 3*Math.PI/2); // Left side
+                assignArc(team1, -Math.PI/2, Math.PI/2);  // Right side
+            }
+        } else {
+            // FFA - Standard Circle
+            const angleStep = (Math.PI * 2) / simState.players.length;
+            simState.players.forEach((p, i) => {
+                const angle = angleStep * i;
+                p.x = center.x + Math.cos(angle) * radius;
+                p.y = center.y + Math.sin(angle) * radius;
+                initTurret(p);
+            });
+        }
+        
+        function initTurret(p) {
+             const ageData = GAME_DATA.ages[p.age];
+             if(ageData && ageData.turret && (!p.turrets || p.turrets.length === 0)) {
+                 p.turrets = [{ id: 'base_turret', typeId: ageData.turret.id, cooldown: 0, slot: 0 }];
+             }
+        }
+
+        // Input Setup (Same as before but with team check)
+        setupInput();
+
+        const me = simState.players.find(p => p.id === localPlayerId);
+        if (me) { camera.x = me.x; camera.y = me.y; }
+
+        if(isHost) {
+            document.addEventListener('visibilitychange', () => {
+                if (document.hidden) getLobbyRef().doc(lobbyId).update({ status: 'paused' });
+                else getLobbyRef().doc(lobbyId).update({ status: 'playing' });
+            });
+            requestAnimationFrame(hostGameLoop);
+            setInterval(hostSync, 200); 
+        } else {
+            startClientListener();
+            requestAnimationFrame(clientRenderLoop);
+        }
+        updateUI();
+    }
+    
+    function setupInput() {
         let isDragging = false;
         let lastPos = { x: 0, y: 0 };
         const getPos = (e) => {
-            if (e.changedTouches) return { x: e.changedTouches[0].clientX, y: e.changedTouches[0].clientY };
-            if (e.touches && e.touches.length > 0) return { x: e.touches[0].clientX, y: e.touches[0].clientY };
-            return { x: e.clientX, y: e.clientY };
+            const t = (e.touches && e.touches.length) ? e.touches[0] : (e.changedTouches ? e.changedTouches[0] : e);
+            return { x: t.clientX, y: t.clientY };
         };
         const onDown = (e) => {
             if (e.button === 2) { 
-                if (input.mode === 'ability') {
-                    input.mode = 'select';
-                    document.body.style.cursor = 'default';
-                }
-                return;
+                input.mode = 'select'; document.body.style.cursor = 'default'; return; 
             }
-            
             isDragging = false;
             const p = getPos(e);
-            input.mouse.down = true;
-            input.mouse.x = p.x;
-            input.mouse.y = p.y;
-            lastPos = p;
+            input.mouse.down = true; input.mouse.x = p.x; input.mouse.y = p.y; lastPos = p;
         };
         const onMove = (e) => {
             e.preventDefault(); 
             const p = getPos(e);
-            input.mouse.x = p.x;
-            input.mouse.y = p.y;
+            input.mouse.x = p.x; input.mouse.y = p.y;
             if (input.mouse.down) {
-                const dx = p.x - lastPos.x;
-                const dy = p.y - lastPos.y;
+                const dx = p.x - lastPos.x; const dy = p.y - lastPos.y;
                 if (Math.abs(dx) > 2 || Math.abs(dy) > 2) isDragging = true;
-                if (isDragging) {
-                    camera.x -= dx / camera.zoom;
-                    camera.y -= dy / camera.zoom;
-                    lastPos = p;
-                }
+                if (isDragging) { camera.x -= dx / camera.zoom; camera.y -= dy / camera.zoom; lastPos = p; }
             }
         };
         const onUp = (e) => {
@@ -579,6 +755,7 @@
             if (!isDragging && e.button === 0) handleInput();
             isDragging = false;
         };
+        
         canvas.addEventListener('mousedown', onDown);
         canvas.addEventListener('mousemove', onMove);
         canvas.addEventListener('mouseup', onUp);
@@ -587,234 +764,84 @@
         canvas.addEventListener('touchend', onUp);
         canvas.addEventListener('wheel', e => {
             e.preventDefault();
-            camera.zoom *= (1 - e.deltaY * 0.001);
-            camera.zoom = Math.max(0.2, Math.min(camera.zoom, 2.5));
+            camera.zoom = Math.max(0.2, Math.min(camera.zoom * (1 - e.deltaY * 0.001), 2.5));
         });
-        window.addEventListener('contextmenu', e => {
-            e.preventDefault();
-        });
-
-        const me = simState.players.find(p => p.id === localPlayerId);
-        if (me) {
-            camera.x = me.x;
-            camera.y = me.y;
-        }
-
-        if(isHost) {
-            // HOST LOGIC
-            document.addEventListener('visibilitychange', () => {
-                if (document.hidden) {
-                    getLobbyRef().doc(lobbyId).update({ status: 'paused' });
-                } else {
-                    getLobbyRef().doc(lobbyId).update({ status: 'playing' });
-                }
-            });
-
-            requestAnimationFrame(hostGameLoop);
-            setInterval(hostSync, 200); 
-        } else {
-            // CLIENT LISTENER
-            getLobbyRef().doc(lobbyId).onSnapshot(doc => {
-                if(!doc.exists) return;
-                const d = doc.data();
-                lastUpdateReceived = Date.now();
-                
-                const connectionOverlay = document.getElementById('connection-overlay');
-                const connectionMsg = document.getElementById('connection-msg');
-                
-                if (d.status === 'paused') {
-                    connectionOverlay.classList.remove('hidden');
-                    connectionMsg.innerText = "Host Paused the Game (Minimized)";
-                } else {
-                    connectionOverlay.classList.add('hidden');
-                }
-
-                if(d.stateJSON) {
-                    const parsed = JSON.parse(d.stateJSON);
-                    
-                    // --- SMART SYNC FOR PLAYERS ---
-                    d.players.forEach(serverPlayer => {
-                        const localP = simState.players.find(p => p.id === serverPlayer.id);
-                        if (localP) {
-                            // Sync critical data
-                            localP.gold = serverPlayer.gold;
-                            localP.xp = serverPlayer.xp;
-                            localP.hp = serverPlayer.hp;
-                            localP.age = serverPlayer.age;
-                            
-                            // *** FIX: SYNC TARGET ID SO CLIENTS KNOW WHO THEY ARE ATTACKING ***
-                            localP.targetId = serverPlayer.targetId;
-                            
-                            // Check for new spawn queue head to reset timer
-                            const oldHead = localP.spawnQueue && localP.spawnQueue.length > 0 ? localP.spawnQueue[0].reqId : null;
-                            const newHead = serverPlayer.spawnQueue && serverPlayer.spawnQueue.length > 0 ? serverPlayer.spawnQueue[0].reqId : null;
-                            
-                            if (oldHead !== newHead && newHead) {
-                                // New item started, reset visual timer to max delay
-                                const stats = getUnitStats(localP.age, serverPlayer.spawnQueue[0].unitId);
-                                if (stats) localP._visualTimer = stats.delay;
-                                else localP._visualTimer = serverPlayer.spawnTimer;
-                            } 
-                            else if (serverPlayer.spawnQueue.length > 0) {
-                                // Item still processing.
-                                // SMART SYNC: Only snap if desync > 300ms
-                                const diff = Math.abs((localP._visualTimer || 0) - serverPlayer.spawnTimer);
-                                if (diff > 0.3) {
-                                    localP._visualTimer = serverPlayer.spawnTimer;
-                                }
-                                // Else: Trust local smooth timer
-                            } else {
-                                localP._visualTimer = 0;
-                            }
-                            
-                            localP.spawnQueue = serverPlayer.spawnQueue;
-                        }
-                    });
-                    
-                    // If simState.players is empty (first load), just use server data
-                    if (simState.players.length === 0) {
-                        simState.players = d.players;
-                        simState.players.forEach(p => { p._visualTimer = p.spawnTimer; });
-                    }
-
-                    const me = simState.players.find(p => p.id === localPlayerId);
-                    if(me) {
-                        // RECONCILE PENDING QUEUE
-                        if(me.spawnQueue) {
-                            const serverQueueIds = new Set(me.spawnQueue.map(i => i.reqId));
-                            pendingQueue = pendingQueue.filter(pending => !serverQueueIds.has(pending.reqId));
-                        }
-                    }
-                    
-                    simState.projectiles = parsed.projectiles;
-                    simState.effects = parsed.effects;
-                    
-                    // --- INTERPOLATION SETUP ---
-                    parsed.units.forEach(serverUnit => {
-                        if (renderState.units.has(serverUnit.id)) {
-                            const u = renderState.units.get(serverUnit.id);
-                            u.targetX = serverUnit.x;
-                            u.targetY = serverUnit.y;
-                            u.hp = serverUnit.hp;
-                            u.maxHp = serverUnit.maxHp;
-                        } else {
-                            renderState.units.set(serverUnit.id, {
-                                ...serverUnit,
-                                x: serverUnit.x,
-                                y: serverUnit.y,
-                                targetX: serverUnit.x,
-                                targetY: serverUnit.y
-                            });
-                        }
-                    });
-
-                    const serverIds = new Set(parsed.units.map(u => u.id));
-                    for (let [id, u] of renderState.units) {
-                        if (!serverIds.has(id)) renderState.units.delete(id);
-                    }
-                    
-                    simState.units = Array.from(renderState.units.values());
-                }
-            });
-            requestAnimationFrame(clientRenderLoop);
-        }
-
-        updateUI();
+        window.addEventListener('contextmenu', e => e.preventDefault());
     }
 
     // --- Host Simulation ---
-    
-    const TICK_RATE = 1 / 30; 
+    const BASE_TICK_RATE = 1/30;
     let lastTime = performance.now();
     let accumulator = 0;
     let syncTimer = 0;
 
     function hostGameLoop(time) {
         if (gameState === 'finished') return;
-        
-        if (document.hidden) {
-            lastTime = time;
-            requestAnimationFrame(hostGameLoop);
-            return;
-        }
+        if (document.hidden) { lastTime = time; requestAnimationFrame(hostGameLoop); return; }
 
         let deltaTime = (time - lastTime) / 1000;
         lastTime = time;
-
         if (deltaTime > 0.25) deltaTime = 0.25;
 
-        accumulator += deltaTime;
+        // Apply Game Speed Setting
+        const simDelta = deltaTime * currentSettings.gameSpeed;
 
-        while (accumulator >= TICK_RATE) {
-            updateHostLogic(TICK_RATE);
-            accumulator -= TICK_RATE;
+        accumulator += simDelta;
+        while (accumulator >= BASE_TICK_RATE) {
+            updateHostLogic(BASE_TICK_RATE);
+            accumulator -= BASE_TICK_RATE;
         }
         
         syncTimer += deltaTime;
-        if (syncTimer > 0.1) {
-            hostSyncState();
-            syncTimer = 0;
-        }
+        if (syncTimer > 0.1) { hostSyncState(); syncTimer = 0; }
 
         renderGame(0);
         updateUI();
-
         requestAnimationFrame(hostGameLoop);
     }
 
     function updateHostLogic(dt) {
+        // Process Actions
         getLobbyRef().doc(lobbyId).collection('requests').get().then(snap => {
-            snap.forEach(doc => {
-                const req = doc.data();
-                processAction(req);
-                doc.ref.delete();
-            });
+            snap.forEach(doc => { processAction(doc.data()); doc.ref.delete(); });
         });
 
+        // Player/Bot Logic
         simState.players.forEach(p => {
-            if (p.hp <= 0) {
-                p.spawnQueue = [];
-                return;
-            }
-
+            if (p.hp <= 0) { p.spawnQueue = []; return; }
             if (p.isBot) runBotLogic(p, dt);
-            
             if (p.specialCooldown > 0) p.specialCooldown -= dt;
-
             if (p.spawnQueue.length > 0) {
                 p.spawnTimer -= dt;
-                
-                // Safety check: if queue exists but timer is inexplicably stuck at 0 without popping
-                // This prevents bots from "machine gunning" units if a logic glitch occurs
-                if (p.spawnTimer <= 0 && p.spawnQueue.length > 0) {
-                     // Proceed to spawn normally
+                if (p.spawnTimer <= 0) {
                      const item = p.spawnQueue.shift();
                      spawnUnitReal(p.id, item.unitId);
-                    
                      if (p.spawnQueue.length > 0) {
-                        const nextItem = p.spawnQueue[0];
-                        const stats = getUnitStats(p.age, nextItem.unitId);
+                        const stats = getUnitStats(p.age, p.spawnQueue[0].unitId);
                         p.spawnTimer = stats ? stats.delay : 1.0;
-                     } else {
-                        p.spawnTimer = 0;
-                     }
+                     } else p.spawnTimer = 0;
                 }
             }
         });
 
+        // Units
         simState.units = simState.units.filter(u => u.hp > 0);
         simState.units.forEach(u => updateUnit(u, dt));
 
-        simState.players.forEach(p => {
-            if (p.hp > 0) updateTurrets(p, dt);
-        });
+        // Turrets
+        simState.players.forEach(p => { if (p.hp > 0) updateTurrets(p, dt); });
 
+        // Projectiles
         simState.projectiles = simState.projectiles.filter(p => {
-            p.x += p.vx * dt * 400; 
-            p.y += p.vy * dt * 400;
-            
+            p.x += p.vx * dt * 400; p.y += p.vy * dt * 400;
             let hit = false;
-            const targets = simState.units.filter(u => u.ownerId !== p.ownerId);
+            
+            // Check collisions based on settings
+            const targets = simState.units.filter(u => {
+                if (currentSettings.mode === 'TEAMS') return u.teamId !== p.teamId;
+                return u.ownerId !== p.ownerId;
+            });
+            
             for (let t of targets) {
                 if (dist(p.x, p.y, t.x, t.y) < GAME_DATA.unitCollisionRadius + 5) {
                     t.hp -= p.damage;
@@ -824,35 +851,270 @@
                     break;
                 }
             }
-            
             if (!hit) {
                 simState.players.forEach(pl => {
-                    if (pl.id !== p.ownerId && pl.hp > 0 && dist(p.x, p.y, pl.x, pl.y) < GAME_DATA.baseRadius) {
+                    let isEnemy = (currentSettings.mode === 'TEAMS') ? (pl.teamId !== p.teamId) : (pl.id !== p.ownerId);
+                    if (isEnemy && pl.hp > 0 && dist(p.x, p.y, pl.x, pl.y) < GAME_DATA.baseRadius) {
                         pl.hp -= p.damage;
                         hit = true;
                         if (pl.hp <= 0) pl.hp = 0; 
                     }
                 });
             }
-
             return !hit && Math.abs(p.x) < 2000 && Math.abs(p.y) < 2000; 
         });
 
-        simState.effects = simState.effects.filter(e => {
-            e.timer -= dt;
-            return e.timer > 0;
-        });
+        // Effects
+        simState.effects = simState.effects.filter(e => { e.timer -= dt; return e.timer > 0; });
         
+        // Win Condition
+        checkWinCondition();
+    }
+
+    function checkWinCondition() {
         const alivePlayers = simState.players.filter(p => p.hp > 0);
-        if (alivePlayers.length === 1 && simState.players.length > 1) {
-            const winner = alivePlayers[0];
-            gameState = 'finished';
-            try {
+        
+        if (currentSettings.mode === 'TEAMS') {
+            const teamsAlive = new Set(alivePlayers.map(p => p.teamId));
+            if (teamsAlive.size === 1 && simState.players.length > 1) {
+                const winTeam = [...teamsAlive][0];
+                gameState = 'finished';
                 getLobbyRef().doc(lobbyId).update({
                     status: 'finished',
-                    winner: { id: winner.id, name: winner.name }
+                    winnerTeam: winTeam,
+                    winReason: `${TEAM_NAMES[winTeam]} has eliminated the opposition!`
                 });
-            } catch(e) { console.error("Win update error", e); }
+            }
+        } else {
+            // FFA
+            if (alivePlayers.length === 1 && simState.players.length > 1) {
+                const winner = alivePlayers[0];
+                gameState = 'finished';
+                getLobbyRef().doc(lobbyId).update({
+                    status: 'finished',
+                    winner: { id: winner.id, name: winner.name },
+                    winReason: "Last Empire Standing!"
+                });
+            }
+        }
+    }
+
+    function runBotLogic(bot, dt) {
+        // Find valid target
+        if (!bot.targetId || Math.random() < 0.01) {
+            const enemies = simState.players.filter(p => {
+                if (p.hp <= 0) return false;
+                if (currentSettings.mode === 'TEAMS') return p.teamId !== bot.teamId;
+                return p.id !== bot.id;
+            });
+            if (enemies.length > 0) {
+                bot.targetId = enemies[Math.floor(Math.random() * enemies.length)].id;
+            }
+        }
+        
+        // Upgrade
+        const nextAge = GAME_DATA.ages[bot.age + 1];
+        if (nextAge && bot.xp >= (nextAge.xpReq * currentSettings.xpReqMult)) {
+             bot.age++;
+             bot.hp = Math.min(bot.hp + 500, currentSettings.baseHp);
+             bot.maxHp = currentSettings.baseHp;
+             bot.turrets = [{ id: 'base_turret', typeId: GAME_DATA.ages[bot.age].turret.id, cooldown: 0, slot: 0 }];
+        }
+        
+        // Spawn
+        const ageData = GAME_DATA.ages[bot.age];
+        if (bot.spawnQueue.length < 3 && Math.random() < 0.02) {
+            const unitOpts = ageData.units;
+            const pick = unitOpts[Math.floor(Math.random() * unitOpts.length)];
+            const realCost = pick.cost * currentSettings.unitCostMult;
+            
+            if (bot.gold >= realCost) {
+                bot.gold -= realCost;
+                bot.spawnQueue.push({ reqId: 'bot_'+Math.random(), unitId: pick.id });
+                if (bot.spawnQueue.length === 1) bot.spawnTimer = pick.delay;
+            }
+        }
+        
+        // Special
+        if (bot.specialCooldown <= 0 && ageData.special && bot.targetId) {
+             const t = simState.players.find(p => p.id === bot.targetId);
+             if (t) useSpecial(bot.id, t.x, t.y);
+        }
+    }
+
+    function updateUnit(u, dt) {
+        const owner = simState.players.find(p => p.id === u.ownerId);
+        const targetPlayer = simState.players.find(p => p.id === u.targetId);
+        const unitRadius = GAME_DATA.unitCollisionRadius;
+        
+        if(u.cooldownTimer > 0) u.cooldownTimer -= dt * 60;
+
+        // Re-target if target dead or invalid
+        if (!targetPlayer || targetPlayer.hp <= 0) {
+            let close = null; let minDist = Infinity;
+            simState.players.forEach(p => {
+                const isEnemy = (currentSettings.mode === 'TEAMS') ? p.teamId !== u.teamId : p.id !== u.ownerId;
+                if (isEnemy && p.hp > 0) {
+                    const d = dist(u.x, u.y, p.x, p.y);
+                    if (d < minDist) { minDist = d; close = p; }
+                }
+            });
+            if (close) u.targetId = close.id;
+            return;
+        }
+
+        // Look for combat
+        let enemy = null; let enemyDist = Infinity;
+        for (let other of simState.units) {
+            const isEnemy = (currentSettings.mode === 'TEAMS') ? other.teamId !== u.teamId : other.ownerId !== u.ownerId;
+            if (isEnemy) {
+                const d = dist(u.x, u.y, other.x, other.y);
+                const maxRange = Math.max(u.meleeRange, u.rangedRange);
+                if (d <= maxRange + unitRadius * 2 && d < enemyDist) { enemyDist = d; enemy = other; }
+            }
+        }
+        
+        // Check base if no unit
+        if (!enemy) {
+             const d = dist(u.x, u.y, targetPlayer.x, targetPlayer.y);
+             const maxRange = Math.max(u.meleeRange, u.rangedRange);
+             if (d <= maxRange + unitRadius + GAME_DATA.baseRadius) {
+                 enemy = { type: 'base', x: targetPlayer.x, y: targetPlayer.y, id: targetPlayer.id, radius: GAME_DATA.baseRadius };
+                 enemyDist = d;
+             }
+        }
+
+        if (enemy) {
+            const enemyRadius = enemy.type === 'base' ? GAME_DATA.baseRadius : unitRadius;
+            const isMelee = enemyDist <= u.meleeRange + unitRadius + enemyRadius;
+            const isRanged = u.rangedDmg > 0 && enemyDist <= u.rangedRange + unitRadius + enemyRadius;
+
+            if (u.cooldownTimer <= 0) {
+                if (isMelee && u.meleeDmg > 0) {
+                    if (enemy.type === 'base') {
+                        const p = simState.players.find(pl => pl.id === enemy.id);
+                        if(p) p.hp -= u.meleeDmg;
+                    } else {
+                        enemy.hp -= u.meleeDmg;
+                        if(enemy.hp <= 0) awardKill(u.ownerId, enemy);
+                    }
+                    simState.effects.push({x: enemy.x, y: enemy.y, type: 'hit', timer: 0.2});
+                    u.cooldownTimer = 60; 
+                } else if (isRanged) {
+                    simState.projectiles.push({
+                        x: u.x, y: u.y, 
+                        vx: (enemy.x - u.x) / dist(u.x, u.y, enemy.x, enemy.y),
+                        vy: (enemy.y - u.y) / dist(u.x, u.y, enemy.x, enemy.y),
+                        damage: u.rangedDmg,
+                        ownerId: u.ownerId,
+                        teamId: u.teamId // Propagate team for projectiles
+                    });
+                    u.cooldownTimer = 60;
+                } else {
+                    moveUnit(u, targetPlayer, dt);
+                }
+            }
+        } else {
+            moveUnit(u, targetPlayer, dt);
+        }
+    }
+
+    function moveUnit(u, targetPlayer, dt) {
+        let canMove = true;
+        const step = 1.0 * dt * 50; // Speed fixed here, but dt is scaled by gameSpeed
+        const angle = Math.atan2(targetPlayer.y - u.y, targetPlayer.x - u.x);
+        const nextX = u.x + Math.cos(angle) * step;
+        const nextY = u.y + Math.sin(angle) * step;
+
+        for (let other of simState.units) {
+            if (other.id !== u.id) {
+                const d = dist(nextX, nextY, other.x, other.y);
+                if (d < GAME_DATA.unitCollisionRadius * 2) {
+                    const dx = other.x - u.x; const dy = other.y - u.y;
+                    if (dx * Math.cos(angle) + dy * Math.sin(angle) > 0) { canMove = false; break; }
+                }
+            }
+        }
+        if (canMove) { u.x = nextX; u.y = nextY; }
+    }
+
+    function updateTurrets(p, dt) {
+        p.turrets.forEach(t => {
+            const tData = getTurretData(t.typeId);
+            if (!tData) return;
+            if (t.cooldown > 0) t.cooldown -= dt * 60;
+            if (t.cooldown <= 0) {
+                let target = null; let minD = tData.range;
+                for (let u of simState.units) {
+                    const isEnemy = (currentSettings.mode === 'TEAMS') ? u.teamId !== p.teamId : u.ownerId !== p.id;
+                    if (isEnemy) {
+                        const d = dist(p.x, p.y, u.x, u.y);
+                        if (d < minD) { minD = d; target = u; }
+                    }
+                }
+                if (target) {
+                    simState.projectiles.push({
+                        x: p.x, y: p.y,
+                        vx: (target.x - p.x) / dist(p.x, p.y, target.x, target.y),
+                        vy: (target.y - p.y) / dist(p.x, p.y, target.x, target.y),
+                        damage: tData.damage,
+                        ownerId: p.id,
+                        teamId: p.teamId
+                    });
+                    t.cooldown = tData.cooldown;
+                }
+            }
+        });
+    }
+
+    function spawnUnitReal(playerId, unitId) {
+        const p = simState.players.find(x => x.id === playerId);
+        const stats = getUnitStats(p.age, unitId);
+        
+        // Spawn near base, towards center
+        let spawnX = p.x; let spawnY = p.y;
+        const a = Math.atan2(-p.y, -p.x);
+        spawnX += Math.cos(a) * (GAME_DATA.baseRadius + 20);
+        spawnY += Math.sin(a) * (GAME_DATA.baseRadius + 20);
+
+        simState.units.push({
+            id: Math.random().toString(36),
+            ownerId: p.id,
+            teamId: p.teamId,
+            typeId: unitId,
+            x: spawnX, y: spawnY,
+            hp: stats.hp, maxHp: stats.hp,
+            meleeDmg: stats.meleeDmg, rangedDmg: stats.rangedDmg,
+            meleeRange: stats.meleeRange, rangedRange: stats.rangedRange,
+            cooldownTimer: 0,
+            targetId: p.targetId,
+            icon: stats.icon,
+            cost: stats.cost
+        });
+    }
+
+    function useSpecial(playerId, x, y) {
+        const p = simState.players.find(x => x.id === playerId);
+        const age = GAME_DATA.ages[p.age];
+        if(!age.special || p.specialCooldown > 0) return;
+        
+        p.specialCooldown = age.special.cooldown;
+        simState.effects.push({x, y, type: 'explosion', radius: age.special.radius, timer: 1.0});
+        
+        simState.units.forEach(u => {
+            const isEnemy = (currentSettings.mode === 'TEAMS') ? u.teamId !== p.teamId : u.ownerId !== playerId;
+            if (isEnemy && dist(u.x, u.y, x, y) < age.special.radius) {
+                u.hp -= age.special.damage;
+                if(u.hp <= 0) awardKill(playerId, u);
+            }
+        });
+    }
+
+    function awardKill(killerId, victimUnit) {
+        const killer = simState.players.find(p => p.id === killerId);
+        if (killer && victimUnit.cost) {
+            killer.gold += Math.ceil(victimUnit.cost * 1.3 * currentSettings.goldMult);
+            killer.xp += Math.floor(victimUnit.cost * 1.0 * currentSettings.expMult);
         }
     }
 
@@ -860,7 +1122,7 @@
         if(gameState === 'finished') return;
         const stateJSON = JSON.stringify({
             units: simState.units.map(u => ({
-                id: u.id, ownerId: u.ownerId, typeId: u.typeId, 
+                id: u.id, ownerId: u.ownerId, teamId: u.teamId, typeId: u.typeId, 
                 x: Math.round(u.x), y: Math.round(u.y), 
                 hp: u.hp, maxHp: u.maxHp, icon: u.icon
             })),
@@ -875,371 +1137,144 @@
 
     function hostSync() {
         if(gameState === 'finished') return;
-        getLobbyRef().doc(lobbyId).update({
-            players: simState.players
-        });
+        getLobbyRef().doc(lobbyId).update({ players: simState.players });
     }
 
-    // --- Simulation Helpers ---
-
-    function getUnitStats(ageIdx, unitId) {
-        for (const age of GAME_DATA.ages) {
-            const u = age.units.find(x => x.id === unitId);
-            if (u) return u;
-        }
-        return null;
-    }
-
-    function runBotLogic(bot, dt) {
-        if (!bot.targetId || Math.random() < 0.01) {
-            const enemies = simState.players.filter(p => p.id !== bot.id && p.hp > 0);
-            if (enemies.length > 0) {
-                bot.targetId = enemies[Math.floor(Math.random() * enemies.length)].id;
+    // --- Client / Shared ---
+    
+    function startClientListener() {
+        getLobbyRef().doc(lobbyId).onSnapshot(doc => {
+            if(!doc.exists) return;
+            const d = doc.data();
+            lastUpdateReceived = Date.now();
+            
+            // Paused Overlay
+            const overlay = document.getElementById('connection-overlay');
+            if (d.status === 'paused') {
+                overlay.classList.remove('hidden');
+                document.getElementById('connection-msg').innerText = "Game Paused";
+            } else {
+                overlay.classList.add('hidden');
             }
-        }
-        const nextAge = GAME_DATA.ages[bot.age + 1];
-        if (nextAge && bot.xp >= nextAge.xpReq) {
-             bot.age++;
-             bot.hp = Math.min(bot.hp + 500, GAME_DATA.ages[bot.age].baseHp);
-             bot.maxHp = GAME_DATA.ages[bot.age].baseHp;
-             bot.turrets = [{ id: 'base_turret', typeId: GAME_DATA.ages[bot.age].turret.id, cooldown: 0, slot: 0 }];
-        }
-        const ageData = GAME_DATA.ages[bot.age];
-        if (bot.spawnQueue.length < 3 && Math.random() < 0.02) { // Reduced random chance from 0.05 to 0.02 to reduce spam
-            const unitOpts = ageData.units;
-            const pick = unitOpts[Math.floor(Math.random() * unitOpts.length)];
-            if (bot.gold >= pick.cost) {
-                bot.gold -= pick.cost;
-                bot.spawnQueue.push({ reqId: 'bot_'+Math.random(), unitId: pick.id });
-                // *** FIX: BOT SPAWN DELAY BUG ***
-                // Ensure timer is set if the queue was empty.
-                // Added explicit check to ensure timer is active if queue has 1 item.
-                if (bot.spawnQueue.length === 1) {
-                    bot.spawnTimer = pick.delay;
-                }
-            }
-        }
-        if (bot.specialCooldown <= 0 && ageData.special && bot.targetId) {
-             const t = simState.players.find(p => p.id === bot.targetId);
-             if (t) {
-                 useSpecial(bot.id, t.x, t.y);
-             }
-        }
-    }
 
-    function updateUnit(u, dt) {
-        const owner = simState.players.find(p => p.id === u.ownerId);
-        const targetPlayer = simState.players.find(p => p.id === u.targetId);
-        const unitRadius = GAME_DATA.unitCollisionRadius;
-        
-        if(u.cooldownTimer > 0) u.cooldownTimer -= dt * 60;
-
-        if (!targetPlayer || targetPlayer.hp <= 0) {
-            let close = null;
-            let minDist = Infinity;
-            simState.players.forEach(p => {
-                if (p.id !== u.ownerId && p.hp > 0) {
-                    const d = dist(u.x, u.y, p.x, p.y);
-                    if (d < minDist) { minDist = d; close = p; }
-                }
-            });
-            if (close) {
-                u.targetId = close.id; 
-            }
-            return;
-        }
-
-        let enemy = null;
-        let enemyDist = Infinity;
-        
-        for (let other of simState.units) {
-            if (other.ownerId !== u.ownerId) {
-                const d = dist(u.x, u.y, other.x, other.y);
-                const combinedRadii = unitRadius * 2;
-                const maxRange = Math.max(u.meleeRange, u.rangedRange);
+            if(d.stateJSON) {
+                const parsed = JSON.parse(d.stateJSON);
                 
-                if (d <= maxRange + combinedRadii && d < enemyDist) {
-                    enemyDist = d;
-                    enemy = other;
+                // Sync Players
+                d.players.forEach(serverPlayer => {
+                    const localP = simState.players.find(p => p.id === serverPlayer.id);
+                    if (localP) {
+                        localP.gold = serverPlayer.gold;
+                        localP.xp = serverPlayer.xp;
+                        localP.hp = serverPlayer.hp;
+                        localP.age = serverPlayer.age;
+                        localP.targetId = serverPlayer.targetId;
+                        
+                        // Sync queues
+                        const oldHead = localP.spawnQueue?.[0]?.reqId;
+                        const newHead = serverPlayer.spawnQueue?.[0]?.reqId;
+                        if (oldHead !== newHead && newHead) {
+                            const stats = getUnitStats(localP.age, serverPlayer.spawnQueue[0].unitId);
+                            localP._visualTimer = stats ? stats.delay : 1.0;
+                        } else if (serverPlayer.spawnQueue.length > 0) {
+                             if (Math.abs((localP._visualTimer || 0) - serverPlayer.spawnTimer) > 0.3) {
+                                 localP._visualTimer = serverPlayer.spawnTimer;
+                             }
+                        } else {
+                            localP._visualTimer = 0;
+                        }
+                        localP.spawnQueue = serverPlayer.spawnQueue;
+                    }
+                });
+
+                // Reconcile pending
+                const me = simState.players.find(p => p.id === localPlayerId);
+                if(me && me.spawnQueue) {
+                    const serverIds = new Set(me.spawnQueue.map(i => i.reqId));
+                    pendingQueue = pendingQueue.filter(p => !serverIds.has(p.reqId));
                 }
-            }
-        }
-        
-        if (!enemy) {
-             const d = dist(u.x, u.y, targetPlayer.x, targetPlayer.y);
-             const baseRadius = GAME_DATA.baseRadius;
-             const maxRange = Math.max(u.meleeRange, u.rangedRange);
-             
-             if (d <= maxRange + unitRadius + baseRadius) {
-                 enemy = { type: 'base', x: targetPlayer.x, y: targetPlayer.y, id: targetPlayer.id, radius: baseRadius };
-                 enemyDist = d;
-             }
-        }
 
-        if (enemy) {
-            const enemyRadius = enemy.type === 'base' ? GAME_DATA.baseRadius : unitRadius;
-            const isMeleeRange = enemyDist <= u.meleeRange + unitRadius + enemyRadius;
-            const isRangedRange = u.rangedDmg > 0 && enemyDist <= u.rangedRange + unitRadius + enemyRadius;
-
-            if (u.cooldownTimer <= 0) {
-                if (isMeleeRange && u.meleeDmg > 0) {
-                    if (enemy.type === 'base') {
-                        const p = simState.players.find(pl => pl.id === enemy.id);
-                        if(p) p.hp -= u.meleeDmg;
+                simState.projectiles = parsed.projectiles;
+                simState.effects = parsed.effects;
+                
+                // Interpolation
+                parsed.units.forEach(serverUnit => {
+                    if (renderState.units.has(serverUnit.id)) {
+                        const u = renderState.units.get(serverUnit.id);
+                        u.targetX = serverUnit.x; u.targetY = serverUnit.y;
+                        u.hp = serverUnit.hp; u.maxHp = serverUnit.maxHp;
                     } else {
-                        enemy.hp -= u.meleeDmg;
-                        if(enemy.hp <= 0) awardKill(u.ownerId, enemy);
+                        renderState.units.set(serverUnit.id, { ...serverUnit, x: serverUnit.x, y: serverUnit.y, targetX: serverUnit.x, targetY: serverUnit.y });
                     }
-                    simState.effects.push({x: enemy.x, y: enemy.y, type: 'hit', timer: 0.2});
-                    u.cooldownTimer = 60; 
-                } else if (isRangedRange) {
-                    simState.projectiles.push({
-                        x: u.x, y: u.y, 
-                        vx: (enemy.x - u.x) / dist(u.x, u.y, enemy.x, enemy.y),
-                        vy: (enemy.y - u.y) / dist(u.x, u.y, enemy.x, enemy.y),
-                        damage: u.rangedDmg,
-                        ownerId: u.ownerId
-                    });
-                    u.cooldownTimer = 60;
-                } else {
-                    moveUnit(u, targetPlayer, dt);
-                }
-            }
-        } else {
-            moveUnit(u, targetPlayer, dt);
-        }
-    }
-
-    function moveUnit(u, targetPlayer, dt) {
-        let canMove = true;
-        const step = STANDARD_SPEED * dt * 50; 
-        const angle = Math.atan2(targetPlayer.y - u.y, targetPlayer.x - u.x);
-        const nextX = u.x + Math.cos(angle) * step;
-        const nextY = u.y + Math.sin(angle) * step;
-
-        for (let other of simState.units) {
-            if (other.id !== u.id) {
-                const d = dist(nextX, nextY, other.x, other.y);
-                if (d < GAME_DATA.unitCollisionRadius * 2) {
-                    const dx = other.x - u.x;
-                    const dy = other.y - u.y;
-                    const dot = dx * Math.cos(angle) + dy * Math.sin(angle);
-                    if (dot > 0) {
-                        canMove = false;
-                        break;
-                    }
-                }
-            }
-        }
-
-        if (canMove) {
-            u.x = nextX;
-            u.y = nextY;
-        }
-    }
-
-    function updateTurrets(p, dt) {
-        p.turrets.forEach(t => {
-            const tData = getTurretData(t.typeId);
-            if (!tData) return;
-            
-            if (t.cooldown > 0) t.cooldown -= dt * 60;
-            
-            if (t.cooldown <= 0) {
-                let target = null;
-                let minD = tData.range;
-                for (let u of simState.units) {
-                    if (u.ownerId !== p.id) {
-                        const d = dist(p.x, p.y, u.x, u.y);
-                        if (d < minD) { minD = d; target = u; }
-                    }
-                }
-                
-                if (target) {
-                    simState.projectiles.push({
-                        x: p.x, y: p.y,
-                        vx: (target.x - p.x) / dist(p.x, p.y, target.x, target.y),
-                        vy: (target.y - p.y) / dist(p.x, p.y, target.x, target.y),
-                        damage: tData.damage,
-                        ownerId: p.id
-                    });
-                    t.cooldown = tData.cooldown;
-                }
+                });
+                const sIds = new Set(parsed.units.map(u => u.id));
+                for (let [id, u] of renderState.units) { if (!sIds.has(id)) renderState.units.delete(id); }
+                simState.units = Array.from(renderState.units.values());
             }
         });
     }
 
-    function spawnUnitReal(playerId, unitId) {
-        const p = simState.players.find(x => x.id === playerId);
-        const stats = getUnitStats(p.age, unitId);
+    function clientRenderLoop(time) {
+        if (gameState !== 'finished') requestAnimationFrame(clientRenderLoop);
         
-        let spawnX = p.x;
-        let spawnY = p.y;
-        
-        if (p.targetId) {
-            const target = simState.players.find(tp => tp.id === p.targetId);
-            if (target) {
-                const a = Math.atan2(target.y - p.y, target.x - p.x);
-                spawnX += Math.cos(a) * (GAME_DATA.baseRadius + 20);
-                spawnY += Math.sin(a) * (GAME_DATA.baseRadius + 20);
-            }
-        } else {
-             const a = Math.atan2(-p.y, -p.x);
-             spawnX += Math.cos(a) * (GAME_DATA.baseRadius + 20);
-             spawnY += Math.sin(a) * (GAME_DATA.baseRadius + 20);
+        const dt = 0.016;
+        if (Date.now() - lastUpdateReceived > 4000 && !document.hidden) {
+             document.getElementById('connection-overlay').classList.remove('hidden');
+             document.getElementById('connection-msg').innerText = "Connection Lost";
         }
-
-        simState.units.push({
-            id: Math.random().toString(36),
-            ownerId: p.id,
-            typeId: unitId,
-            x: spawnX,
-            y: spawnY,
-            hp: stats.hp,
-            maxHp: stats.hp,
-            meleeDmg: stats.meleeDmg,
-            rangedDmg: stats.rangedDmg,
-            meleeRange: stats.meleeRange,
-            rangedRange: stats.rangedRange,
-            cooldownTimer: 0,
-            targetId: p.targetId,
-            icon: stats.icon,
-            cost: stats.cost
-        });
-    }
-
-    function useSpecial(playerId, x, y) {
-        const p = simState.players.find(x => x.id === playerId);
-        const age = GAME_DATA.ages[p.age];
-        if(!age.special) return;
         
-        if (p.specialCooldown > 0) return;
-
-        p.specialCooldown = age.special.cooldown;
+        if (pendingQueue.length > 0 && Date.now() - pendingQueue[0].timestamp > 5000) pendingQueue.shift();
         
-        simState.effects.push({x, y, type: 'explosion', radius: age.special.radius, timer: 1.0});
-        
-        simState.units.forEach(u => {
-            if (u.ownerId !== playerId && dist(u.x, u.y, x, y) < age.special.radius) {
-                u.hp -= age.special.damage;
-                if(u.hp <= 0) awardKill(playerId, u);
-            }
-        });
-    }
-
-    function awardKill(killerId, victimUnit) {
-        const killer = simState.players.find(p => p.id === killerId);
-        if (killer && victimUnit.cost) {
-            killer.gold += Math.ceil(victimUnit.cost * 1.3);
-            killer.xp += Math.floor(victimUnit.cost * 1.0);
-        }
+        simState.players.forEach(p => { if (p._visualTimer > 0) p._visualTimer -= dt; });
+        renderGame(dt);
+        updateUI();
     }
 
     function processAction(action) {
+        const p = simState.players.find(x => x.id === action.playerId);
+        if (!p) return;
+        
         if (action.type === 'queueUnit') {
-            const p = simState.players.find(x => x.id === action.playerId);
-            if (p && p.hp > 0) {
+             if (p.hp > 0) {
                  const stats = getUnitStats(p.age, action.unitId);
-                 if (stats && p.gold >= stats.cost) {
-                     p.gold -= stats.cost;
+                 const cost = stats.cost * currentSettings.unitCostMult;
+                 if (stats && p.gold >= cost) {
+                     p.gold -= cost;
                      p.spawnQueue.push({ unitId: action.unitId, reqId: action.reqId });
-                     if (p.spawnQueue.length === 1) {
-                         p.spawnTimer = stats.delay;
-                     }
+                     if (p.spawnQueue.length === 1) p.spawnTimer = stats.delay;
                  }
-            }
+             }
         } else if (action.type === 'setTarget') {
-            const p = simState.players.find(x => x.id === action.playerId);
-            if (p) p.targetId = action.targetId;
+            p.targetId = action.targetId;
         } else if (action.type === 'upgrade') {
-            const p = simState.players.find(x => x.id === action.playerId);
-            if (p) {
-                const nextAge = GAME_DATA.ages[p.age + 1];
-                if (nextAge && p.xp >= nextAge.xpReq) {
-                    p.age++;
-                    p.hp += 500;
-                    p.maxHp = GAME_DATA.ages[p.age].baseHp;
-                    p.turrets = [{ id: 'base_turret', typeId: GAME_DATA.ages[p.age].turret.id, cooldown: 0, slot: 0 }];
-                }
+            const nextAge = GAME_DATA.ages[p.age + 1];
+            if (nextAge && p.xp >= (nextAge.xpReq * currentSettings.xpReqMult)) {
+                p.age++;
+                p.hp += 500; p.maxHp = currentSettings.baseHp;
+                p.turrets = [{ id: 'base_turret', typeId: GAME_DATA.ages[p.age].turret.id, cooldown: 0, slot: 0 }];
             }
         } else if (action.type === 'special') {
              useSpecial(action.playerId, action.x, action.y);
         }
     }
 
-    // --- Client Interaction ---
-    
-    let lastClientTime = performance.now();
-    
-    function clientRenderLoop(time) {
-        const dt = (time - lastClientTime) / 1000;
-        lastClientTime = time;
-        
-        const timeSinceUpdate = Date.now() - lastUpdateReceived;
-        const connectionOverlay = document.getElementById('connection-overlay');
-        const connectionMsg = document.getElementById('connection-msg');
-        
-        if (timeSinceUpdate > 4000 && !document.hidden && connectionOverlay.classList.contains('hidden')) {
-             connectionOverlay.classList.remove('hidden');
-             connectionMsg.innerText = "Connection Lost / Host Left";
-        }
-        
-        // Cleanup expired pending requests (older than 5s) to prevent visual ghosts
-        const now = Date.now();
-        if (pendingQueue.length > 0) {
-             pendingQueue = pendingQueue.filter(p => now - p.timestamp < 5000);
-        }
-        
-        // --- CLIENT VISUAL TIMER UPDATE ---
-        simState.players.forEach(p => {
-            if (p._visualTimer > 0) {
-                p._visualTimer -= dt;
-                if(p._visualTimer < 0) p._visualTimer = 0;
-            }
-        });
-
-        renderGame(dt);
-        updateUI();
-        if (gameState !== 'finished') requestAnimationFrame(clientRenderLoop);
-    }
-
     function sendAction(data) {
         const now = Date.now();
         const reqId = localPlayerId + '_' + now + '_' + Math.random();
-
-        if (data.type === 'queueUnit') {
-            lastUnitBuyTime = now;
-
-            if (!isHost) {
-                const p = simState.players.find(x => x.id === localPlayerId);
-                const stats = getUnitStats(p.age, data.unitId);
-                if (p && stats && p.gold >= stats.cost) {
-                    // Optimistic update
-                    const wasQueueEmpty = (!p.spawnQueue || p.spawnQueue.length === 0) && pendingQueue.length === 0;
-                    
-                    pendingQueue.push({ 
-                        unitId: data.unitId, 
-                        reqId: reqId, 
-                        timestamp: now, 
-                        cost: stats.cost,
-                        startTime: now 
-                    });
-                    
-                    updateUI();
-                }
+        
+        if (data.type === 'queueUnit' && !isHost) {
+            const p = simState.players.find(x => x.id === localPlayerId);
+            const stats = getUnitStats(p.age, data.unitId);
+            const cost = stats.cost * currentSettings.unitCostMult;
+            if (p && stats && p.gold >= cost) {
+                pendingQueue.push({ unitId: data.unitId, reqId: reqId, timestamp: now, cost: cost, startTime: now });
+                updateUI();
             }
         }
 
         const payload = { ...data, playerId: localPlayerId, reqId: reqId };
-
-        if (isHost) {
-            processAction(payload);
-        } else {
-            getLobbyRef().doc(lobbyId).collection('requests').add({
-                ...payload,
-                timestamp: firebase.firestore.FieldValue.serverTimestamp()
-            });
-        }
+        if (isHost) processAction(payload);
+        else getLobbyRef().doc(lobbyId).collection('requests').add({ ...payload, timestamp: firebase.firestore.FieldValue.serverTimestamp() });
     }
 
     function handleInput() {
@@ -1249,382 +1284,277 @@
 
         if (input.mode === 'ability') {
             sendAction({ type: 'special', x: mx, y: my });
-            input.mode = 'select';
-            document.body.style.cursor = 'default';
-            return;
+            input.mode = 'select'; document.body.style.cursor = 'default'; return;
         }
 
         let clickedBase = null;
-        simState.players.forEach(p => {
-            if (dist(mx, my, p.x, p.y) < GAME_DATA.baseRadius) {
-                clickedBase = p;
-            }
-        });
+        simState.players.forEach(p => { if (dist(mx, my, p.x, p.y) < GAME_DATA.baseRadius) clickedBase = p; });
 
-        if (clickedBase && clickedBase.id !== localPlayerId) {
-            sendAction({ type: 'setTarget', targetId: clickedBase.id });
+        if (clickedBase) {
+            // Target Validation
+            const me = simState.players.find(p => p.id === localPlayerId);
+            if (me) {
+                let valid = true;
+                if (currentSettings.mode === 'TEAMS') {
+                    if (clickedBase.teamId === me.teamId) valid = false;
+                } else {
+                    if (clickedBase.id === me.id) valid = false;
+                }
+                
+                if (valid) {
+                    sendAction({ type: 'setTarget', targetId: clickedBase.id });
+                } else {
+                    // Visual feedback
+                    document.getElementById('target-status').classList.add('animate-ping');
+                    setTimeout(() => document.getElementById('target-status').classList.remove('animate-ping'), 500);
+                }
+            }
         }
     }
 
-    // --- Rendering ---
-
+    // --- Rendering & Helper ---
+    
     function renderGame(dt) {
-        if (!dt || dt > 0.5) dt = 0.016;
-
-        ctx.fillStyle = '#1a1a1a'; 
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-        ctx.strokeStyle = '#333';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
+        ctx.fillStyle = '#1a1a1a'; ctx.fillRect(0, 0, canvas.width, canvas.height);
         
         ctx.save();
         ctx.translate(canvas.width/2, canvas.height/2);
         ctx.scale(camera.zoom, camera.zoom);
         ctx.translate(-camera.x, -camera.y);
 
-        ctx.strokeStyle = '#444';
-        ctx.lineWidth = 5;
-        ctx.beginPath();
-        ctx.arc(0, 0, GAME_DATA.mapRadius, 0, Math.PI * 2);
-        ctx.stroke();
+        ctx.strokeStyle = '#444'; ctx.lineWidth = 5; ctx.beginPath();
+        ctx.arc(0, 0, GAME_DATA.mapRadius, 0, Math.PI * 2); ctx.stroke();
 
+        // Draw Players
         simState.players.forEach(p => {
             if (p.hp <= 0) {
-                 ctx.fillStyle = '#222';
-                 ctx.beginPath(); ctx.arc(p.x, p.y, GAME_DATA.baseRadius, 0, Math.PI*2); ctx.fill();
-                 return;
+                 ctx.fillStyle = '#222'; ctx.beginPath(); ctx.arc(p.x, p.y, GAME_DATA.baseRadius, 0, Math.PI*2); ctx.fill(); return;
             }
             
             const me = simState.players.find(me => me.id === localPlayerId);
             if (me && me.targetId === p.id) {
-                ctx.strokeStyle = '#ff0000';
-                ctx.lineWidth = 4;
-                ctx.beginPath(); ctx.arc(p.x, p.y, GAME_DATA.baseRadius + 10, 0, Math.PI*2); ctx.stroke();
+                ctx.strokeStyle = '#ff0000'; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(p.x, p.y, GAME_DATA.baseRadius + 10, 0, Math.PI*2); ctx.stroke();
             }
 
-            ctx.fillStyle = p.color;
-            ctx.beginPath();
-            ctx.arc(p.x, p.y, GAME_DATA.baseRadius, 0, Math.PI*2);
-            ctx.fill();
+            ctx.fillStyle = p.color; ctx.beginPath(); ctx.arc(p.x, p.y, GAME_DATA.baseRadius, 0, Math.PI*2); ctx.fill();
             
+            // Team Ring
+            if (currentSettings.mode === 'TEAMS') {
+                ctx.strokeStyle = TEAM_COLORS[p.teamId]; ctx.lineWidth = 8; ctx.stroke();
+            }
+
             if(p.turrets.length > 0) {
                 const tur = p.turrets[0];
                 const tData = getTurretData(tur.typeId);
-                ctx.fillStyle = '#555';
-                ctx.beginPath(); ctx.arc(p.x, p.y, 30, 0, Math.PI*2); ctx.fill(); 
-                ctx.fillStyle = '#fff';
-                ctx.font = '36px Arial'; 
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
+                ctx.fillStyle = '#555'; ctx.beginPath(); ctx.arc(p.x, p.y, 30, 0, Math.PI*2); ctx.fill(); 
+                ctx.fillStyle = '#fff'; ctx.font = '36px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
                 ctx.fillText(tData.icon, p.x, p.y);
             }
 
             drawBar(p.x, p.y - GAME_DATA.baseRadius - 15, 120, 12, p.hp, p.maxHp, '#0f0');
-            
-            ctx.fillStyle = '#fff';
-            ctx.font = '22px Arial';
-            ctx.fillText(p.name, p.x, p.y - GAME_DATA.baseRadius - 40);
+            ctx.fillStyle = '#fff'; ctx.font = '22px Arial'; ctx.fillText(p.name, p.x, p.y - GAME_DATA.baseRadius - 40);
         });
 
+        // Draw Units
         const unitsToDraw = isHost ? simState.units : Array.from(renderState.units.values());
-        
         unitsToDraw.forEach(u => {
             if (!isHost) {
-                const t = 1.0 - Math.pow(0.001, dt); 
-                u.x += (u.targetX - u.x) * t;
-                u.y += (u.targetY - u.y) * t;
-                
-                if (dist(u.x, u.y, u.targetX, u.targetY) > 60) {
-                    u.x = u.targetX;
-                    u.y = u.targetY;
-                }
+                const t = 1.0 - Math.pow(0.001, dt || 0.016); 
+                u.x += (u.targetX - u.x) * t; u.y += (u.targetY - u.y) * t;
+                if (dist(u.x, u.y, u.targetX, u.targetY) > 60) { u.x = u.targetX; u.y = u.targetY; }
             }
 
             const p = simState.players.find(pl => pl.id === u.ownerId);
-            const color = p ? p.color : '#fff';
+            const color = (currentSettings.mode === 'TEAMS' && p) ? TEAM_COLORS[p.teamId] : (p ? p.color : '#fff');
             
-            ctx.fillStyle = color;
-            ctx.beginPath();
-            ctx.arc(u.x, u.y, 28, 0, Math.PI*2);
-            ctx.fill();
-            
-            ctx.font = '44px Arial';
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            ctx.fillText(u.icon, u.x, u.y);
-
+            ctx.fillStyle = color; ctx.beginPath(); ctx.arc(u.x, u.y, 28, 0, Math.PI*2); ctx.fill();
+            ctx.font = '44px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(u.icon, u.x, u.y);
             drawBar(u.x, u.y - 48, 48, 8, u.hp, u.maxHp, '#0f0');
         });
 
+        // Projectiles
         simState.projectiles.forEach(p => {
-            if (!isHost) {
-                p.x += p.vx * dt * 400; 
-                p.y += p.vy * dt * 400;
-            }
-
-            ctx.fillStyle = '#ffff00';
-            ctx.beginPath();
-            ctx.arc(p.x, p.y, 8, 0, Math.PI*2); 
-            ctx.fill();
+            if (!isHost) { p.x += p.vx * (dt||0.016) * 400; p.y += p.vy * (dt||0.016) * 400; }
+            ctx.fillStyle = '#ffff00'; ctx.beginPath(); ctx.arc(p.x, p.y, 8, 0, Math.PI*2); ctx.fill();
         });
         
         simState.effects.forEach(e => {
-            if (e.type === 'hit') {
-                ctx.fillStyle = `rgba(255, 255, 255, ${e.timer * 2})`;
-                ctx.beginPath(); ctx.arc(e.x, e.y, 20, 0, Math.PI*2); ctx.fill(); 
-            } else if (e.type === 'explosion') {
-                ctx.fillStyle = `rgba(255, 100, 0, ${e.timer})`;
-                ctx.beginPath(); ctx.arc(e.x, e.y, e.radius, 0, Math.PI*2); ctx.fill();
-            }
+            if (e.type === 'hit') { ctx.fillStyle = `rgba(255, 255, 255, ${e.timer * 2})`; ctx.beginPath(); ctx.arc(e.x, e.y, 20, 0, Math.PI*2); ctx.fill(); }
+            else if (e.type === 'explosion') { ctx.fillStyle = `rgba(255, 100, 0, ${e.timer})`; ctx.beginPath(); ctx.arc(e.x, e.y, e.radius, 0, Math.PI*2); ctx.fill(); }
         });
 
         if (input.mode === 'ability') {
             const me = simState.players.find(x => x.id === localPlayerId);
             const age = GAME_DATA.ages[me.age];
             if(age && age.special) {
-                const rect = canvas.getBoundingClientRect();
                 const wx = (input.mouse.x - canvas.width/2) / camera.zoom + camera.x;
                 const wy = (input.mouse.y - canvas.height/2) / camera.zoom + camera.y;
-
-                ctx.strokeStyle = 'rgba(255, 0, 0, 0.5)';
-                ctx.fillStyle = 'rgba(255, 0, 0, 0.2)';
-                ctx.lineWidth = 2;
-                ctx.beginPath();
-                ctx.arc(wx, wy, age.special.radius, 0, Math.PI*2);
-                ctx.stroke();
-                ctx.fill();
+                ctx.strokeStyle = 'rgba(255, 0, 0, 0.5)'; ctx.fillStyle = 'rgba(255, 0, 0, 0.2)';
+                ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(wx, wy, age.special.radius, 0, Math.PI*2); ctx.stroke(); ctx.fill();
             }
         }
-
         ctx.restore();
     }
 
     function drawBar(x, y, w, h, val, max, color) {
-        ctx.fillStyle = '#000';
-        ctx.fillRect(x - w/2, y, w, h);
-        ctx.fillStyle = color;
-        const fill = Math.max(0, (val / max) * w);
-        ctx.fillRect(x - w/2, y, fill, h);
+        ctx.fillStyle = '#000'; ctx.fillRect(x - w/2, y, w, h);
+        ctx.fillStyle = color; ctx.fillRect(x - w/2, y, Math.max(0, (val / max) * w), h);
     }
 
-    // --- UI Updates ---
+    function getUnitStats(ageIdx, unitId) {
+        for (const age of GAME_DATA.ages) {
+            const u = age.units.find(x => x.id === unitId);
+            if (u) return u;
+        }
+        return null;
+    }
     
-    let currentRenderedAge = -1;
+    function getTurretData(tid) {
+        for(let a of GAME_DATA.ages) { if (a.turret && a.turret.id === tid) return a.turret; }
+        return null;
+    }
+    
+    function dist(x1, y1, x2, y2) { return Math.sqrt((x2-x1)**2 + (y2-y1)**2); }
 
     function updateUI() {
         const p = simState.players.find(x => x.id === localPlayerId);
         if (!p) return;
-
         const ageIndex = p.age;
         const ageData = GAME_DATA.ages[ageIndex];
-        const nextAge = GAME_DATA.ages[ageIndex + 1];
 
         let displayGold = p.gold;
-        if (!isHost) {
-            pendingQueue.forEach(req => { displayGold -= req.cost; });
-        }
+        if (!isHost) pendingQueue.forEach(req => { displayGold -= req.cost; });
         
         document.getElementById('stats-gold').innerText = Math.floor(Math.max(0, displayGold));
         document.getElementById('stats-xp').innerText = Math.floor(p.xp);
         
-        // --- QUEUE UI (REWRITTEN & SEPARATED FOR HOST/CLIENT) ---
+        // Queue UI
         const queueDiv = document.getElementById('queue-bar');
-        
-        // Combine server queue and pending queue for display
         let displayQueue = p.spawnQueue ? [...p.spawnQueue] : [];
-        // Map pending items to same structure
-        const mappedPending = pendingQueue.map(pq => ({ unitId: pq.unitId, isPending: true, startTime: pq.startTime }));
-        displayQueue = displayQueue.concat(mappedPending);
+        displayQueue = displayQueue.concat(pendingQueue.map(pq => ({ unitId: pq.unitId, isPending: true, startTime: pq.startTime })));
 
         if (displayQueue.length > 0) {
             queueDiv.classList.remove('hidden');
-            
             queueDiv.innerHTML = displayQueue.map((item, idx) => {
                 const uStats = getUnitStats(p.age, item.unitId);
                 if (!uStats) return '';
-                
-                let progressHtml = '';
-                
-                // Only animate the FIRST item (Head of Queue)
+                let pct = 0;
                 if (idx === 0) {
-                    let pct = 0;
-                    
                     if (item.isPending) {
-                        // Case A: Pending item (Local click, waiting for server)
-                        // This applies to both Host (briefly) and Client
                         const elapsed = (Date.now() - item.startTime) / 1000;
                         pct = Math.min(100, Math.max(0, (elapsed / uStats.delay) * 100));
                     } else if (isHost) {
-                        // Case B: HOST Logic - Use direct authoritative timer
-                        // p.spawnTimer is "Time Remaining"
                         pct = Math.min(100, Math.max(0, (1 - (p.spawnTimer / uStats.delay)) * 100));
                     } else {
-                        // Case C: CLIENT Logic - Use smooth local timer synced with server
-                        // p._visualTimer is "Time Remaining"
                         pct = Math.min(100, Math.max(0, (1 - (p._visualTimer / uStats.delay)) * 100));
                     }
-                    
-                    progressHtml = `<div class="queue-progress" style="width: ${pct}%"></div>`;
-                } else {
-                     progressHtml = `<div class="queue-progress" style="width: 0%"></div>`;
                 }
-                
                 const opacity = item.isPending ? 'opacity-70' : '';
-                return `<div class="queue-item ${opacity}">${uStats.icon}${progressHtml}</div>`;
+                return `<div class="queue-item ${opacity}">${uStats.icon}<div class="queue-progress" style="width: ${idx===0?pct:0}%"></div></div>`;
             }).join('');
         } else {
             queueDiv.classList.add('hidden');
-            queueDiv.innerHTML = '';
         }
 
-
-        // --- Unit Bar Construction ---
+        // Unit Bar
         const unitContainer = document.getElementById('unit-bar');
-        
-        if (currentRenderedAge !== ageIndex) {
-            currentRenderedAge = ageIndex;
-            
+        if (unitContainer.dataset.age !== String(ageIndex)) {
+            unitContainer.dataset.age = ageIndex;
             unitContainer.innerHTML = ageData.units.map(u => `
                 <div id="btn-unit-${u.id}" class="unit-card relative w-24 h-24 rounded cursor-pointer flex flex-col items-center justify-center" 
                      onclick="sendAction({type: 'queueUnit', unitId: '${u.id}'})">
                     <span class="text-5xl pointer-events-none">${u.icon}</span> 
                     <span class="text-base text-yellow-400 font-bold pointer-events-none">$${u.cost}</span>
-                    <div class="tooltip pointer-events-none">
-                        <b class="text-yellow-400 text-xl">${u.name}</b><br/>
-                        <div class="grid grid-cols-2 gap-2 mt-1">
-                            <span>❤️ HP: ${u.hp}</span>
-                            <span>⏱️ Train: ${u.delay}s</span>
-                            <span>⚔️ Melee: ${u.meleeDmg} (${u.meleeRange})</span>
-                            <span>🏹 Range: ${u.rangedDmg} (${u.rangedRange})</span>
-                        </div>
-                    </div>
+                    <div class="tooltip pointer-events-none"><b class="text-yellow-400 text-xl">${u.name}</b><br/>...</div>
                 </div>
             `).join('');
 
             const specialBtn = document.getElementById('special-btn');
             if (ageData.special) {
-                specialBtn.innerHTML = `<span class="pointer-events-none text-4xl">⭐</span><span class="text-sm pointer-events-none">${ageData.special.name}</span><div id="special-cd-overlay" class="absolute inset-0 bg-black bg-opacity-70 flex items-center justify-center text-white font-bold hidden text-2xl"></div>`;
-                specialBtn.onclick = () => {
-                    input.mode = 'ability';
-                    document.body.style.cursor = 'crosshair';
-                };
-                specialBtn.classList.remove('opacity-50', 'cursor-not-allowed', 'bg-gray-800');
-                specialBtn.classList.add('bg-purple-900', 'border-purple-500', 'hover:bg-purple-800');
+                specialBtn.innerHTML = `<span class="pointer-events-none text-4xl">⭐</span><span class="text-sm pointer-events-none">${ageData.special.name}</span><div id="special-cd-overlay" class="absolute inset-0 bg-black bg-opacity-70 hidden flex items-center justify-center text-white text-2xl"></div>`;
+                specialBtn.onclick = () => { input.mode = 'ability'; document.body.style.cursor = 'crosshair'; };
+                specialBtn.className = "relative w-24 h-24 rounded bg-purple-900 border-2 border-purple-500 hover:bg-purple-800 flex flex-col items-center justify-center transition overflow-hidden";
             } else {
-                specialBtn.innerHTML = 'Locked';
-                specialBtn.onclick = null;
-                specialBtn.classList.add('opacity-50', 'cursor-not-allowed', 'bg-gray-800');
-                specialBtn.classList.remove('bg-purple-900', 'border-purple-500', 'hover:bg-purple-800');
+                specialBtn.innerHTML = 'Locked'; specialBtn.onclick = null;
+                specialBtn.className = "relative w-24 h-24 rounded bg-gray-800 opacity-50 cursor-not-allowed flex flex-col items-center justify-center";
             }
         }
-
-        const cdOverlay = document.getElementById('special-cd-overlay');
-        const specialBtn = document.getElementById('special-btn');
-        if (p.specialCooldown > 0 && cdOverlay) {
-             cdOverlay.classList.remove('hidden');
-             cdOverlay.innerText = Math.ceil(p.specialCooldown);
-             specialBtn.onclick = null; 
-             specialBtn.classList.add('cursor-not-allowed');
-        } else if (cdOverlay) {
-             cdOverlay.classList.add('hidden');
-             specialBtn.onclick = () => { input.mode = 'ability'; document.body.style.cursor = 'crosshair'; };
-             specialBtn.classList.remove('cursor-not-allowed');
-        }
-
+        
+        // Update Unit Costs in UI based on multiplier
         ageData.units.forEach(u => {
             const btn = document.getElementById(`btn-unit-${u.id}`);
             if (btn) {
-                if (displayGold < u.cost) {
-                    btn.classList.add('disabled');
-                } else {
-                    btn.classList.remove('disabled');
-                }
+                const realCost = Math.ceil(u.cost * currentSettings.unitCostMult);
+                btn.querySelector('span.text-yellow-400').innerText = '$' + realCost;
+                if (displayGold < realCost) btn.classList.add('disabled'); else btn.classList.remove('disabled');
             }
         });
 
+        // Special CD
+        const cdOverlay = document.getElementById('special-cd-overlay');
+        if (cdOverlay) {
+             if (p.specialCooldown > 0) {
+                 cdOverlay.classList.remove('hidden'); cdOverlay.innerText = Math.ceil(p.specialCooldown);
+                 document.getElementById('special-btn').classList.add('cursor-not-allowed');
+             } else {
+                 cdOverlay.classList.add('hidden');
+                 document.getElementById('special-btn').classList.remove('cursor-not-allowed');
+             }
+        }
+
+        // Upgrade Btn
         const upgradeBtn = document.getElementById('upgrade-btn');
+        const nextAge = GAME_DATA.ages[ageIndex + 1];
         if (nextAge) {
             upgradeBtn.classList.remove('hidden');
-            const canAfford = p.xp >= nextAge.xpReq;
-            
-            if (canAfford) {
+            const req = nextAge.xpReq * currentSettings.xpReqMult;
+            if (p.xp >= req) {
                 upgradeBtn.classList.remove('opacity-50', 'cursor-not-allowed');
                 upgradeBtn.onclick = () => { sendAction({type: 'upgrade'}); };
             } else {
                 upgradeBtn.classList.add('opacity-50', 'cursor-not-allowed');
                 upgradeBtn.onclick = null;
             }
-            upgradeBtn.innerHTML = `Evolve to ${nextAge.name}<br/><span class="text-xs">${nextAge.xpReq} XP</span>`;
+            upgradeBtn.innerHTML = `Evolve<br/><span class="text-xs">${req} XP</span>`;
         } else {
             upgradeBtn.classList.add('hidden');
         }
         
+        // Target Status
         const targetStatus = document.getElementById('target-status');
         if (p.targetId) {
             const t = simState.players.find(x => x.id === p.targetId);
             targetStatus.innerText = `Target: ${t ? t.name : 'Unknown'}`;
             targetStatus.classList.remove('text-red-400', 'animate-pulse');
             targetStatus.classList.add('text-white');
+            if (currentSettings.mode === 'TEAMS') targetStatus.style.borderColor = TEAM_COLORS[t?.teamId];
         } else {
-            targetStatus.innerText = "Click a Base to Set Target!";
+            targetStatus.innerText = "Select Target";
             targetStatus.classList.add('text-red-400', 'animate-pulse');
             targetStatus.classList.remove('text-white');
         }
     }
 
-    function resizeCanvas() {
-        canvas.width = window.innerWidth;
-        canvas.height = window.innerHeight;
-    }
-    
-    function dist(x1, y1, x2, y2) {
-        return Math.sqrt((x2-x1)**2 + (y2-y1)**2);
-    }
-    
-    function getTurretData(tid) {
-        for(let a of GAME_DATA.ages) {
-            if (a.turret && a.turret.id === tid) return a.turret;
-        }
-        return null;
-    }
-
-    // Move Init to DOMContentLoaded to ensure UI elements exist
-    window.addEventListener('DOMContentLoaded', () => {
-        initApp();
-    });
-
+    window.addEventListener('DOMContentLoaded', () => initApp());
 </script>
 
 <!-- === UI LAYOUT === -->
 <div id="lobby-screen" class="screen w-full h-full flex flex-row items-center justify-center relative bg-gray-900 gap-8">
-    <!-- Version -->
-    <div class="absolute bottom-4 right-4 text-gray-600 text-sm">
-        Build: <span id="version-display"></span>
-    </div>
+    <div class="absolute bottom-4 right-4 text-gray-600 text-sm">Build: <span id="version-display"></span></div>
 
-    <!-- MAIN MENU PANEL -->
     <div class="glass-panel p-8 rounded-xl max-w-md w-full text-center">
-        <h1 class="text-5xl font-bold mb-6 text-yellow-500">Age of War: FFA</h1>
-        <p class="mb-4 text-gray-300 text-xl">Multiplayer Strategy Game</p>
-        
+        <h1 class="text-5xl font-bold mb-6 text-yellow-500">Age of War</h1>
         <div id="auth-status" class="mb-6 text-base text-yellow-500 animate-pulse">Connecting...</div>
-
         <div class="flex flex-col gap-4">
             <input id="lobby-name" type="text" placeholder="Your Name" class="bg-gray-800 border border-gray-600 p-4 rounded text-white text-xl">
-            
             <div class="flex items-center gap-4 bg-gray-800 p-3 rounded border border-gray-600">
-                <span class="text-lg text-gray-300">Base Color:</span>
+                <span class="text-lg text-gray-300">Color:</span>
                 <input id="player-color" type="color" value="#ff0000" class="flex-1">
             </div>
-            
             <div class="flex items-center gap-2 justify-center text-gray-400 mb-2">
-                 <input type="checkbox" id="is-private-lobby">
-                 <label for="is-private-lobby">Private Game (Code Only)</label>
+                 <input type="checkbox" id="is-private-lobby"> <label for="is-private-lobby">Private Game</label>
             </div>
-
             <button onclick="createLobby()" class="btn-primary w-full py-4 text-xl">Create New Game</button>
-            
             <div class="flex gap-2 mt-4">
                 <input id="lobby-id-input" type="text" placeholder="CODE" class="bg-gray-800 border border-gray-600 p-3 rounded flex-1 text-white text-base text-center uppercase tracking-widest">
                 <button onclick="joinLobby()" class="bg-blue-600 hover:bg-blue-500 text-white px-6 rounded font-bold text-lg">Join</button>
@@ -1632,96 +1562,126 @@
         </div>
     </div>
     
-    <!-- PUBLIC BROWSER PANEL -->
     <div class="glass-panel p-6 rounded-xl w-80 h-96 flex flex-col">
         <h2 class="text-xl font-bold text-gray-300 mb-4 border-b border-gray-600 pb-2">Public Games</h2>
         <div id="active-lobbies-list" class="flex-1 overflow-y-auto pr-2">
-            <!-- Injected -->
             <div class="text-gray-500 text-sm text-center mt-10">Loading...</div>
         </div>
     </div>
 </div>
 
-<div id="waiting-room" class="screen hidden w-full h-full flex flex-col items-center justify-center bg-gray-900">
-    <div class="glass-panel p-8 rounded-xl max-w-lg w-full">
-        <h2 class="text-3xl font-bold mb-4">Lobby</h2>
-        <div id="copy-box" class="bg-black p-4 rounded mb-6 text-base font-mono text-gray-400 cursor-pointer transition flex justify-between items-center" onclick="copyLobbyId()">
-            <span>Code: <span id="display-lobby-id" class="text-white font-bold select-all text-xl tracking-widest"></span></span>
-            <span class="text-xs bg-gray-700 px-2 py-1 rounded">COPY</span>
-        </div>
+<div id="waiting-room" class="screen hidden w-full h-full flex flex-col items-center justify-center bg-gray-900 overflow-y-auto p-4">
+    <div class="glass-panel p-6 rounded-xl w-full max-w-4xl flex gap-6 items-start">
         
-        <div class="mb-6">
-            <h3 class="text-lg text-gray-400 mb-2">Players</h3>
-            <div id="player-list" class="max-h-60 overflow-y-auto text-lg"></div>
+        <!-- Left: Lobby Info & Players -->
+        <div class="flex-1">
+            <h2 class="text-3xl font-bold mb-4">Lobby</h2>
+            <div id="copy-box" class="bg-black p-4 rounded mb-6 text-base font-mono text-gray-400 cursor-pointer transition flex justify-between items-center" onclick="copyLobbyId()">
+                <span>Code: <span id="display-lobby-id" class="text-white font-bold select-all text-xl tracking-widest"></span></span>
+                <span class="text-xs bg-gray-700 px-2 py-1 rounded">COPY</span>
+            </div>
+            
+            <div class="mb-6">
+                <h3 class="text-lg text-gray-400 mb-2">Players</h3>
+                <div id="player-list" class="max-h-60 overflow-y-auto text-lg"></div>
+            </div>
+
+            <div class="flex gap-4 mb-4">
+                <button id="add-bot-btn" onclick="addBot()" class="bg-gray-600 hover:bg-gray-500 text-white px-6 py-3 rounded flex-1 text-lg">Add Bot</button>
+                <button id="start-btn" onclick="setGameStarted()" class="btn-primary flex-1 text-lg">Start Game</button>
+            </div>
+            
+            <div class="border-t border-gray-700 pt-4 flex flex-col items-center">
+                 <button id="leave-btn" onclick="leaveLobby()" class="text-red-500 hover:text-red-400 text-sm underline">Leave Lobby</button>
+                 <span id="leave-msg" class="text-xs text-gray-500 mt-1"></span>
+            </div>
         </div>
 
-        <div class="flex gap-4 mb-4">
-            <button id="add-bot-btn" onclick="addBot()" class="bg-gray-600 hover:bg-gray-500 text-white px-6 py-3 rounded flex-1 text-lg">Add Bot</button>
-            <button id="start-btn" onclick="setGameStarted()" class="btn-primary flex-1 text-lg">Start Game</button>
+        <!-- Right: Settings Panel -->
+        <div class="w-80 bg-black bg-opacity-30 p-4 rounded border border-gray-700">
+            <h3 class="text-xl font-bold mb-4 text-gray-300">Game Settings</h3>
+            
+            <div class="grid grid-cols-2 gap-3 mb-4">
+                <div>
+                    <label class="setting-label">Mode</label>
+                    <select id="set-mode" class="setting-input bg-gray-800" onchange="onSettingChange()">
+                        <option value="FFA">FFA (Classic)</option>
+                        <option value="TEAMS">Team vs Team</option>
+                    </select>
+                </div>
+                <div id="group-team-layout" class="hidden">
+                    <label class="setting-label">Team Layout</label>
+                    <select id="set-team-layout" class="setting-input bg-gray-800" onchange="onSettingChange()">
+                        <option value="ADJACENT">Sides (Left/Right)</option>
+                        <option value="CHECKER">Alternating</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="space-y-3">
+                <div>
+                    <label class="setting-label">Game Speed</label>
+                    <select id="set-speed" class="setting-input" onchange="onSettingChange()">
+                        <option value="0.5">0.5x (Slow)</option>
+                        <option value="1.0" selected>1.0x (Normal)</option>
+                        <option value="1.5">1.5x (Fast)</option>
+                        <option value="2.0">2.0x (Turbo)</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="setting-label">Base HP</label>
+                    <input type="number" id="set-hp" class="setting-input" value="2500" step="100" min="100" onchange="onSettingChange()">
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                    <div>
+                        <label class="setting-label">Gold Reward</label>
+                        <input type="number" id="set-gold" class="setting-input" value="1.0" step="0.1" onchange="onSettingChange()">
+                    </div>
+                    <div>
+                        <label class="setting-label">Exp Reward</label>
+                        <input type="number" id="set-exp" class="setting-input" value="1.0" step="0.1" onchange="onSettingChange()">
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                    <div>
+                        <label class="setting-label">Unit Cost</label>
+                        <input type="number" id="set-cost" class="setting-input" value="1.0" step="0.1" onchange="onSettingChange()">
+                    </div>
+                    <div>
+                        <label class="setting-label">XP to Level</label>
+                        <input type="number" id="set-xpreq" class="setting-input" value="1.0" step="0.1" onchange="onSettingChange()">
+                    </div>
+                </div>
+            </div>
+            
+            <button id="reset-settings-btn" onclick="resetSettings()" class="w-full mt-4 text-xs text-gray-400 hover:text-white border border-gray-600 p-1 rounded">Reset to Defaults</button>
         </div>
-        
-        <div class="border-t border-gray-700 pt-4 flex flex-col items-center">
-             <button id="leave-btn" onclick="leaveLobby()" class="text-red-500 hover:text-red-400 text-sm underline">Leave Lobby</button>
-             <span id="leave-msg" class="text-xs text-gray-500 mt-1"></span>
-        </div>
-        
-        <p class="mt-4 text-sm text-center text-gray-500">Waiting for host to start...</p>
     </div>
 </div>
 
 <div id="game-screen" class="screen hidden w-full h-full">
     <canvas id="game-canvas"></canvas>
-
-    <!-- Connection Overlay -->
     <div id="connection-overlay" class="absolute inset-0 bg-black bg-opacity-70 z-50 flex items-center justify-center hidden">
         <div class="glass-panel p-8 rounded-xl text-center">
             <h2 id="connection-msg" class="text-3xl font-bold text-red-500 mb-2">Connection Lost</h2>
-            <p class="text-gray-300">Waiting for Host...</p>
+            <p class="text-gray-300">Waiting...</p>
         </div>
     </div>
 
-    <!-- HUD -->
     <div class="game-ui flex flex-col justify-between p-6">
-        <!-- Top Bar -->
         <div class="flex justify-between items-start pointer-events-auto">
             <div class="glass-panel p-4 rounded flex gap-6 text-base">
-                <div class="flex flex-col">
-                    <span class="text-yellow-400 font-bold text-lg">GOLD</span>
-                    <span id="stats-gold" class="text-3xl">0</span>
-                </div>
-                <div class="flex flex-col border-l border-gray-600 pl-6">
-                    <span class="text-blue-400 font-bold text-lg">XP</span>
-                    <span id="stats-xp" class="text-3xl">0</span>
-                </div>
+                <div class="flex flex-col"><span class="text-yellow-400 font-bold text-lg">GOLD</span><span id="stats-gold" class="text-3xl">0</span></div>
+                <div class="flex flex-col border-l border-gray-600 pl-6"><span class="text-blue-400 font-bold text-lg">XP</span><span id="stats-xp" class="text-3xl">0</span></div>
             </div>
-            
-            <div id="target-status" class="glass-panel px-6 py-3 rounded font-bold text-red-400 animate-pulse text-xl">
-                Select Target
-            </div>
-            
-            <div class="glass-panel p-3 rounded">
-                <button id="upgrade-btn" class="btn-primary text-lg hidden p-4">Evolve</button>
-            </div>
+            <div id="target-status" class="glass-panel px-6 py-3 rounded font-bold text-red-400 animate-pulse text-xl border-2 border-transparent">Select Target</div>
+            <div class="glass-panel p-3 rounded"><button id="upgrade-btn" class="btn-primary text-lg hidden p-4">Evolve</button></div>
         </div>
-
-        <!-- Bottom Bar -->
         <div class="flex flex-col items-center gap-4 pointer-events-auto pb-6">
-            <!-- Queue Display -->
-            <div id="queue-bar" class="flex gap-2 mb-2 hidden">
-                <!-- Items injected here -->
-            </div>
-
-            <!-- Controls -->
+            <div id="queue-bar" class="flex gap-2 mb-2 hidden"></div>
             <div class="flex items-end gap-6">
-                <!-- Special -->
-                <button id="special-btn" class="relative w-24 h-24 rounded bg-purple-900 border-2 border-purple-500 hover:bg-purple-800 flex flex-col items-center justify-center transition overflow-hidden">
-                    Locked
-                </button>
-
-                <!-- Units -->
-                <div id="unit-bar" class="flex gap-4 glass-panel p-4 rounded-xl">
-                    <!-- Injected via JS -->
-                </div>
+                <button id="special-btn" class="relative w-24 h-24 rounded bg-purple-900 border-2 border-purple-500 hover:bg-purple-800 flex flex-col items-center justify-center transition overflow-hidden">Locked</button>
+                <div id="unit-bar" class="flex gap-4 glass-panel p-4 rounded-xl"></div>
             </div>
         </div>
     </div>
