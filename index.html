@@ -26,9 +26,9 @@
         .game-ui { position: absolute; pointer-events: none; width: 100%; height: 100%; top: 0; left: 0; }
         .pointer-events-auto { pointer-events: auto; }
         
-        .unit-card { transition: all 0.1s; background: rgba(0,0,0,0.8); border: 2px solid #444; }
+        .unit-card { transition: all 0.05s; background: rgba(0,0,0,0.8); border: 2px solid #444; }
         .unit-card:hover { border-color: #fff; transform: translateY(-2px); }
-        .unit-card:active { transform: translateY(0); }
+        .unit-card:active { transform: translateY(0); border-color: #eab308; }
         .unit-card.disabled { opacity: 0.5; cursor: not-allowed; filter: grayscale(1); }
 
         .btn-primary { background: #eab308; color: #000; font-weight: bold; padding: 8px 16px; border-radius: 4px; transition: 0.2s; }
@@ -52,10 +52,9 @@
 <!-- === INITIALIZATION & DATA === -->
 <script>
     // --- Configuration ---
-    const VERSION = "v1.4";
+    const VERSION = "v1.5";
     const STANDARD_SPEED = 1.0; 
     
-    // Stats sourced from Age of War 1 Wiki / Game Data
     const GAME_DATA = {
         ages: [
             {
@@ -123,7 +122,7 @@
         turretSlots: 2,
         mapRadius: 1000,
         baseRadius: 90, 
-        unitCollisionRadius: 20 // Adjusted to 20 (Diameter 40)
+        unitCollisionRadius: 20 
     };
     
     // Globals
@@ -138,17 +137,18 @@
     let camera = { x: 0, y: 0, zoom: 0.8 };
     let input = { keys: {}, mouse: { x: 0, y: 0, down: false }, targetId: null, mode: 'select' }; 
     let lastUnitBuyTime = 0; // For debounce
+    let lastUpdateReceived = Date.now(); // For disconnect detection
     
     // Smoothing & Logic Data
     let renderState = {
         units: new Map(), // Map<unitId, {x, y, ...targetProps}>
+        projectiles: [] // Local sim of projectiles
     };
-    let pendingQueue = []; // Local "Optimistic" Queue items { reqId, unitId, timestamp }
+    let pendingQueue = []; 
     
     const getLobbyRef = () => db.collection('artifacts').doc(appId).collection('public').doc('data').collection('lobbies');
 
     async function initApp() {
-        // Init logic same as before...
         const firebaseConfig = {
 			apiKey: "AIzaSyAcn7ZymxXYPTOhayD1DU2IOAQA7J7Ltrg",
 			authDomain: "ageofffa.firebaseapp.com",
@@ -436,29 +436,22 @@
             });
 
             requestAnimationFrame(hostGameLoop);
-            // Increased sync rate to 200ms for lobby data (players hp etc) to make disconnects detected faster
+            // Increased sync rate to 200ms for lobby data
             setInterval(hostSync, 200); 
         } else {
+            // CLIENT LOBBY LISTENER
             getLobbyRef().doc(lobbyId).onSnapshot(doc => {
                 if(!doc.exists) return;
                 const d = doc.data();
+                lastUpdateReceived = Date.now(); // Update Receipt Timestamp
                 
-                // HOST CONNECTION CHECK
-                const now = Date.now();
-                const lastHeartbeat = d.lastHeartbeat ? d.lastHeartbeat.toMillis() : now;
-                const timeSinceHeartbeat = now - lastHeartbeat;
                 const connectionOverlay = document.getElementById('connection-overlay');
                 const connectionMsg = document.getElementById('connection-msg');
                 
-                // Paused check
+                // Check Explicit Pause Status
                 if (d.status === 'paused') {
                     connectionOverlay.classList.remove('hidden');
                     connectionMsg.innerText = "Host Paused the Game (Minimized)";
-                } 
-                // Heartbeat stale check (Wait 3s)
-                else if (timeSinceHeartbeat > 3000) {
-                    connectionOverlay.classList.remove('hidden');
-                    connectionMsg.innerText = "Connection Lost / Host Left";
                 } else {
                     connectionOverlay.classList.add('hidden');
                 }
@@ -484,9 +477,9 @@
                         }
 
                         // RESTORE TIMER (Anti-Snap Logic)
+                        // If drift is small, keep local timer. If server has a new timer, use it.
                         if (oldTimer !== undefined) {
                             const delta = Math.abs(oldTimer - me.spawnTimer);
-                            // Only snap if drift is significant (> 1s)
                             if (delta < 1.0) {
                                 me._clientTimer = oldTimer;
                             } else {
@@ -497,10 +490,12 @@
                         }
                     }
                     
+                    // --- PROJECTILES SMOOTHING ---
+                    // Replace local with server, but we will animate them in client loop
                     simState.projectiles = parsed.projectiles;
                     simState.effects = parsed.effects;
                     
-                    // INTERPOLATION SETUP:
+                    // --- INTERPOLATION SETUP ---
                     parsed.units.forEach(serverUnit => {
                         if (renderState.units.has(serverUnit.id)) {
                             // Update existing unit target
@@ -570,7 +565,7 @@
             syncTimer = 0;
         }
 
-        renderGame();
+        renderGame(0);
         updateUI();
 
         requestAnimationFrame(hostGameLoop);
@@ -982,6 +977,18 @@
         const dt = (time - lastClientTime) / 1000;
         lastClientTime = time;
         
+        // CHECK DISCONNECT LOCALLY
+        const timeSinceUpdate = Date.now() - lastUpdateReceived;
+        const connectionOverlay = document.getElementById('connection-overlay');
+        const connectionMsg = document.getElementById('connection-msg');
+        
+        // Only trigger disconnect if we haven't received updates for 4s
+        // (And we aren't paused explicitly by server data)
+        if (timeSinceUpdate > 4000 && !document.hidden && connectionOverlay.classList.contains('hidden')) {
+             connectionOverlay.classList.remove('hidden');
+             connectionMsg.innerText = "Connection Lost / Host Left";
+        }
+
         // Advance local timers
         const p = simState.players.find(p => p.id === localPlayerId);
         if (p && p.spawnQueue && p.spawnQueue.length > 0) {
@@ -1002,17 +1009,25 @@
 
         // 1. Queue Logic
         if (data.type === 'queueUnit') {
-            if (now - lastUnitBuyTime < 500) return; 
+            // REDUCED DEBOUNCE to 150ms for snappy clicking
+            if (now - lastUnitBuyTime < 150) return; 
             lastUnitBuyTime = now;
 
             const p = simState.players.find(x => x.id === localPlayerId);
             const stats = getUnitStats(p.age, data.unitId);
             if (p && stats && p.gold >= stats.cost) {
                 p.gold -= stats.cost;
+                
                 // Add to local pending queue ONLY IF NOT HOST
-                // Host updates immediately in processAction, so avoiding duplicates here
                 if (!isHost) {
+                    const wasQueueEmpty = (!p.spawnQueue || p.spawnQueue.length === 0) && pendingQueue.length === 0;
                     pendingQueue.push({ unitId: data.unitId, reqId: reqId, timestamp: now });
+                    
+                    // IF we just started training (empty queue), INITIALIZE TIMER locally
+                    // This fixes the "Empty Bar" glitch
+                    if (wasQueueEmpty) {
+                        p._clientTimer = stats.delay;
+                    }
                 }
                 updateUI();
             }
@@ -1057,7 +1072,6 @@
     // --- Rendering ---
 
     function renderGame(dt) {
-        // Safe check for dt
         if (!dt || dt > 0.5) dt = 0.016;
 
         ctx.fillStyle = '#1a1a1a'; 
@@ -1066,7 +1080,6 @@
         ctx.strokeStyle = '#333';
         ctx.lineWidth = 1;
         ctx.beginPath();
-        const gridSize = 100;
         
         ctx.save();
         ctx.translate(canvas.width/2, canvas.height/2);
@@ -1117,18 +1130,16 @@
             ctx.fillText(p.name, p.x, p.y - GAME_DATA.baseRadius - 40);
         });
 
-        // DRAW SMOOTH UNITS (Exponential Interpolation)
+        // DRAW SMOOTH UNITS
         const unitsToDraw = isHost ? simState.units : Array.from(renderState.units.values());
         
         unitsToDraw.forEach(u => {
             if (!isHost) {
-                // Time-based smooth dampening (frame-rate independent)
-                // Lerp factor ~ 1 - 0.05^(dt)
+                // Smooth Lerp
                 const t = 1.0 - Math.pow(0.001, dt); 
                 u.x += (u.targetX - u.x) * t;
                 u.y += (u.targetY - u.y) * t;
                 
-                // Snap if too far (teleport)
                 if (dist(u.x, u.y, u.targetX, u.targetY) > 60) {
                     u.x = u.targetX;
                     u.y = u.targetY;
@@ -1151,7 +1162,15 @@
             drawBar(u.x, u.y - 48, 48, 8, u.hp, u.maxHp, '#0f0');
         });
 
+        // CLIENT SIDE PROJECTILE PREDICTION
         simState.projectiles.forEach(p => {
+            // Locally update position for visual smoothness
+            // We use simple Euler integration based on velocity
+            if (!isHost) {
+                p.x += p.vx * dt * 400; 
+                p.y += p.vy * dt * 400;
+            }
+
             ctx.fillStyle = '#ffff00';
             ctx.beginPath();
             ctx.arc(p.x, p.y, 8, 0, Math.PI*2); 
@@ -1218,8 +1237,7 @@
         // 1. Get confirmed server queue items
         let combinedQueue = p.spawnQueue ? [...p.spawnQueue] : [];
         
-        // 2. Append local pending items that aren't yet in server queue
-        // (Visual prediction)
+        // 2. Append local pending items
         combinedQueue = combinedQueue.concat(pendingQueue.map(pq => ({ unitId: pq.unitId })));
 
         if (combinedQueue.length > 0) {
@@ -1250,9 +1268,10 @@
         if (currentRenderedAge !== ageIndex) {
             currentRenderedAge = ageIndex;
             
+            // Switch to onmousedown for snappier response
             unitContainer.innerHTML = ageData.units.map(u => `
                 <div id="btn-unit-${u.id}" class="unit-card relative w-24 h-24 rounded cursor-pointer flex flex-col items-center justify-center" 
-                     onclick="sendAction({type: 'queueUnit', unitId: '${u.id}'})">
+                     onmousedown="sendAction({type: 'queueUnit', unitId: '${u.id}'})">
                     <span class="text-5xl pointer-events-none">${u.icon}</span> 
                     <span class="text-base text-yellow-400 font-bold pointer-events-none">$${u.cost}</span>
                     <div class="tooltip pointer-events-none">
