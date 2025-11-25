@@ -188,7 +188,14 @@
         const colorInput = document.getElementById('player-color');
         if(colorInput) colorInput.value = randomColor;
 
-        const firebaseConfig = JSON.parse(__firebase_config);
+        const firebaseConfig = {
+			apiKey: "AIzaSyAhVZB64ov5te0w5he0zeCNuOZuy7jUpuI",
+			authDomain: "ageofffa.firebaseapp.com",
+			projectId: "ageofffa",
+			storageBucket: "ageofffa.firebasestorage.app",
+			messagingSenderId: "461491837298",
+			appId: "1:461491837298:web:daebae2fb46fe3eb3ee5eb"
+		};
         if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
         db = firebase.firestore();
         auth = firebase.auth();
