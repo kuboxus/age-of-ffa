@@ -1213,7 +1213,7 @@
             if (activeSettings.mode === 'TEAMS' && isTeammate(localPlayerId, clickedBase.id)) {
                 const ts = document.getElementById('target-status');
                 ts.innerText = "Cannot Attack Teammate!";
-                ts.className = "glass-panel px-6 py-3 rounded font-bold text-xl text-yellow-500";
+                ts.className = "glass-panel px-6 py-3 rounded font-bold text-xl text-yellow-500 pointer-events-auto";
                 setTimeout(updateUI, 1000);
             } else {
                 sendAction({ type: 'setTarget', targetId: clickedBase.id });
@@ -1446,10 +1446,10 @@
         if (p.targetId) {
             const t = simState.players.find(x => x.id === p.targetId);
             targetStatus.innerText = `Target: ${t ? t.name : 'Unknown'}`;
-            targetStatus.className = "glass-panel px-6 py-3 rounded font-bold text-xl text-white";
+            targetStatus.className = "glass-panel px-6 py-3 rounded font-bold text-xl text-white pointer-events-auto";
         } else {
             targetStatus.innerText = "Select Target";
-            targetStatus.className = "glass-panel px-6 py-3 rounded font-bold text-xl text-red-400 animate-pulse";
+            targetStatus.className = "glass-panel px-6 py-3 rounded font-bold text-xl text-red-400 animate-pulse pointer-events-auto";
         }
     }
 
@@ -1579,19 +1579,19 @@
         <div class="glass-panel p-8 rounded-xl text-center"><h2 class="text-3xl font-bold text-red-500 mb-2">Connection Lost</h2><p class="text-gray-300">Waiting for Host...</p></div>
     </div>
     <div class="game-ui flex flex-col justify-between p-6">
-        <div class="flex justify-between items-start pointer-events-auto">
-            <div class="glass-panel p-4 rounded flex gap-6 text-base">
+        <div class="flex justify-between items-start w-full">
+            <div class="glass-panel p-4 rounded flex gap-6 text-base pointer-events-auto">
                 <div class="flex flex-col"><span class="text-yellow-400 font-bold text-lg">GOLD</span><span id="stats-gold" class="text-3xl">0</span></div>
                 <div class="flex flex-col border-l border-gray-600 pl-6"><span class="text-blue-400 font-bold text-lg">XP</span><span id="stats-xp" class="text-3xl">0</span></div>
             </div>
-            <div id="target-status" class="glass-panel px-6 py-3 rounded font-bold text-red-400 animate-pulse text-xl">Select Target</div>
-            <div class="glass-panel p-3 rounded"><button id="upgrade-btn" class="btn-primary text-lg hidden p-4">Evolve</button></div>
+            <div id="target-status" class="glass-panel px-6 py-3 rounded font-bold text-red-400 animate-pulse text-xl pointer-events-auto">Select Target</div>
+            <div class="glass-panel p-3 rounded pointer-events-auto"><button id="upgrade-btn" class="btn-primary text-lg hidden p-4">Evolve</button></div>
         </div>
-        <div class="flex flex-col items-center gap-4 pointer-events-auto pb-6">
-            <div id="queue-bar" class="flex gap-2 mb-2 hidden"></div>
+        <div class="flex flex-col items-center gap-4 pb-6 w-full">
+            <div id="queue-bar" class="flex gap-2 mb-2 hidden pointer-events-auto"></div>
             <div class="flex items-end gap-6">
-                <button id="special-btn" class="relative w-24 h-24 rounded bg-purple-900 border-2 border-purple-500 hover:bg-purple-800 flex flex-col items-center justify-center transition overflow-hidden">Locked</button>
-                <div id="unit-bar" class="flex gap-4 glass-panel p-4 rounded-xl"></div>
+                <button id="special-btn" class="relative w-24 h-24 rounded bg-purple-900 border-2 border-purple-500 hover:bg-purple-800 flex flex-col items-center justify-center transition overflow-hidden pointer-events-auto">Locked</button>
+                <div id="unit-bar" class="flex gap-4 glass-panel p-4 rounded-xl pointer-events-auto"></div>
             </div>
         </div>
     </div>
