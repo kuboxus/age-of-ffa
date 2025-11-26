@@ -4,6 +4,7 @@ let renderState = {
     units: new Map(), 
     projectiles: [] 
 };
+const spriteCache = new Map(); // For potential future image loading
 
 function initRenderer() {
     canvas = document.getElementById('game-canvas');
@@ -36,6 +37,61 @@ function resizeCanvas() {
         canvas.width = window.innerWidth; 
         canvas.height = window.innerHeight; 
     }
+}
+
+function drawSprite(ctx, source, x, y, size, color, flipX = false, seed = null) {
+    ctx.save();
+    
+    // Animation Math
+    const time = Date.now();
+    const speed = 0.005;
+    // Randomize phase based on seed (if provided) or x+y (for static objects)
+    // Using x+y for moving objects causes animation speed changes (doppler effect), so we use a stable seed for units.
+    const phase = (seed !== null) ? seed : (x + y) * 0.1;
+    
+    // Scale Y: 1.0 +/- 0.1 (90% to 110%)
+    const scaleY = 1.0 + Math.sin(time * speed + phase) * 0.1;
+    const scaleX = flipX ? -1 : 1;
+    
+    // Rotation: +/- 10 degrees (approx 0.17 radians)
+    const rotation = Math.sin(time * speed * 0.7 + phase) * 0.17; 
+
+    ctx.translate(x, y);
+    ctx.rotate(rotation);
+    ctx.scale(scaleX, scaleY);
+
+    // Check if source is likely an image URL (basic check)
+    if (source.includes('/') || source.includes('.') || source.startsWith('data:')) {
+        // Image logic (placeholder for future)
+        // For now, fallback to text if load fails or not implemented fully
+        // If we had an asset manager, we'd use it here.
+        // let img = spriteCache.get(source);
+        // if (!img) { img = new Image(); img.src = source; spriteCache.set(source, img); }
+        // if (img.complete) {
+        //    ctx.drawImage(img, -size/2, -size, size, size);
+        // }
+        // Fallback to emoji for now since we don't have assets
+        ctx.fillStyle = color;
+        ctx.font = size + 'px Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        // Draw at (0,0) which is the anchor point (feet).
+        // Shift up slightly to center vertically relative to the circle
+        ctx.fillText(source, 0, size * 0.1); 
+    } else {
+        // Emoji / Text
+        ctx.fillStyle = color;
+        ctx.font = size + 'px Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        // Fix: standard emojis with 'middle' baseline need to be drawn slightly lower 
+        // to visually center them in the circle.
+        // Previously it was 'bottom' and size*0.1
+        // Let's try 'middle' and offset by size * 0.1
+        ctx.fillText(source, 0, size * 0.15); 
+    }
+
+    ctx.restore();
 }
 
 function renderGame(dt) {
@@ -90,12 +146,34 @@ function renderGame(dt) {
         
         if(p.turrets.length > 0) {
             const tur = p.turrets[0]; const tData = getTurretData(tur.typeId);
+            // Draw Turret Base Circle
             ctx.fillStyle = '#555'; ctx.beginPath(); ctx.arc(p.x, p.y, 30, 0, Math.PI*2); ctx.fill(); 
-            ctx.fillStyle = '#fff'; ctx.font = '36px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(tData.icon, p.x, p.y);
+            
+            // Draw Turret Sprite with Animation
+            drawSprite(ctx, tData.icon, p.x, p.y, 48, '#fff');
+        } else {
+            // Draw Base Sprite (Default Castle)
+            drawSprite(ctx, "🏰", p.x, p.y, 64, '#fff');
         }
 
         drawBar(p.x, p.y - GAME_DATA.baseRadius - 15, 120, 12, p.hp, p.maxHp, '#0f0');
-        ctx.fillStyle = '#fff'; ctx.font = '22px Arial'; ctx.fillText(p.name, p.x, p.y - GAME_DATA.baseRadius - 40);
+        
+        // Player Name
+        ctx.save();
+        ctx.fillStyle = '#fff'; 
+        // Scale name with zoom but clamp to reasonable limits so it's readable but not huge
+        // Base size 24, scaled by 1/zoom slightly to keep it somewhat constant on screen? 
+        // User asked for scaling WITH zoom (so it gets bigger when you zoom in).
+        // Default text behavior scales with context, so just setting a larger font size works.
+        ctx.font = 'bold 32px Arial'; 
+        ctx.textAlign = 'center'; 
+        ctx.textBaseline = 'bottom';
+        ctx.shadowColor = 'black';
+        ctx.shadowBlur = 4;
+        ctx.lineWidth = 3;
+        ctx.strokeText(p.name, p.x, p.y - GAME_DATA.baseRadius - 35);
+        ctx.fillText(p.name, p.x, p.y - GAME_DATA.baseRadius - 35);
+        ctx.restore();
     });
 
     const unitsToDraw = isHost ? simState.units : Array.from(renderState.units.values());
@@ -108,13 +186,36 @@ function renderGame(dt) {
         const color = p ? p.color : '#fff';
         const scale = u.scale || 1.0;
         
-        ctx.fillStyle = color; ctx.beginPath(); ctx.arc(u.x, u.y, 28 * scale, 0, Math.PI*2); ctx.fill();
-        ctx.font = (44 * scale) + 'px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(u.icon, u.x, u.y);
+        // Determine facing (Default emoji faces Left)
+        let flipX = false;
+        if (Math.abs(u.vx) > 0.1) {
+            flipX = u.vx > 0; // If moving Right (vx > 0), flip to face Right
+        } else if (u.targetId) {
+             // If stationary, face target
+             let t = simState.players.find(pl => pl.id === u.targetId);
+             if (!t) {
+                 if (renderState.units.has(u.targetId)) t = renderState.units.get(u.targetId);
+                 else if (simState.units) t = simState.units.find(un => un.id === u.targetId);
+             }
+             if (t) {
+                 flipX = t.x > u.x;
+             }
+        }
+        
+        // Generate stable seed from ID for consistent animation speed regardless of movement
+        let seed = 0;
+        if (u.id) {
+            for(let i=0; i<u.id.length; i++) seed += u.id.charCodeAt(i);
+        }
+        
+        // Draw Unit Sprite with Animation
+        drawSprite(ctx, u.icon, u.x, u.y, 44 * scale, color, flipX, seed);
+        
         drawBar(u.x, u.y - (48 * scale), 48 * scale, 8, u.hp, u.maxHp, '#0f0');
     });
 
     simState.projectiles.forEach(p => {
-        if (!isHost) { p.x += p.vx * dt * 400; p.y += p.vy * dt * 400; }
+        // Movement is handled in game-logic.js (host or client prediction)
         ctx.fillStyle = '#ffff00'; ctx.beginPath(); ctx.arc(p.x, p.y, 8, 0, Math.PI*2); ctx.fill();
     });
     

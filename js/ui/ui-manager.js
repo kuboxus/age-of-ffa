@@ -1,6 +1,7 @@
 let currentRenderedAge = -1;
 let lastQueueHash = "";
 let lastLobbyStateStr = "";
+let gameOverInterval = null;
 
 function initUI() {
     const nameInput = document.getElementById('lobby-name');
@@ -292,6 +293,13 @@ function copyLobbyId() {
 function enterLobbyUI(id, host) {
     // Ensure game state is reset for fresh start logic
     if (typeof gameState !== 'undefined') gameState = 'waiting';
+    
+    // Clear any pending game over timer to prevent race conditions
+    if (gameOverInterval) {
+        clearInterval(gameOverInterval);
+        gameOverInterval = null;
+    }
+    
     showScreen('waiting-room');
     document.getElementById('display-lobby-id').innerText = id;
 }
@@ -336,13 +344,16 @@ function showGameOver(data, settings) {
     document.body.appendChild(overlay);
 
     // Timer Logic
+    if (gameOverInterval) clearInterval(gameOverInterval);
+    
     let timeLeft = 5;
     const timerEl = document.getElementById('lobby-timer');
-    const interval = setInterval(() => {
+    gameOverInterval = setInterval(() => {
         timeLeft--;
         if (timerEl) timerEl.innerText = timeLeft;
         if (timeLeft <= 0) {
-            clearInterval(interval);
+            clearInterval(gameOverInterval);
+            gameOverInterval = null;
             if (isHost && typeof Network !== 'undefined' && Network.resetLobby) {
                 Network.resetLobby();
             }

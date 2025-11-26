@@ -186,6 +186,9 @@ const OfflineAdapter = {
 
             // Prevent duplicate game starts or returns to lobby
             if(data.status === 'playing' || data.status === 'paused') {
+                // Update settings just in case they changed mid-game (though unlikely)
+                if (typeof activeSettings !== 'undefined' && data.settings) activeSettings = data.settings;
+
                 if (typeof gameState !== 'undefined' && gameState === 'waiting') {
                     // Only transition if we were waiting
                     startGameSimulation(data);

@@ -467,6 +467,29 @@ function updateUnit(u, dt) {
     
     for (let other of simState.units) {
         if (other.ownerId !== u.ownerId && !isTeammate(other.ownerId, u.ownerId, simState.players)) {
+            // TRUCE LOGIC:
+            // If 'other' unit is targeting the SAME player (base) that 'u' is targeting, 
+            // and that target player is still alive, then ignore 'other' unit as a target.
+            // This prevents enemies from fighting each other while sieging a common enemy base.
+            // Assumption: u.targetId is the Player ID of the base u is attacking.
+            // We check if other.targetId matches u.targetId.
+            // Note: Units might have targetId set to another unit ID temporarily, 
+            // but generally u.targetId is the main strategic target (Player).
+            
+            // However, u.targetId might update to 'close.id' (nearest player) at the top of updateUnit.
+            // If both units have the same strategic goal (killing Player X), they should ignore each other.
+            
+            // Let's check if both units have the same targetId (which is usually a Player ID).
+            if (u.targetId && other.targetId === u.targetId) {
+                 // Only skip if the common target is actually a Player (Base) and is alive
+                 // (If they are both targeting a dead player, it's FFA again? Or they should disperse? 
+                 // The user said "attacking the same base", implying base is alive.)
+                 const commonTarget = simState.players.find(p => p.id === u.targetId);
+                 if (commonTarget && commonTarget.hp > 0) {
+                     continue; // Skip this potential enemy unit
+                 }
+            }
+
             const d = dist(u.x, u.y, other.x, other.y);
             const otherRadius = GAME_DATA.unitCollisionRadius * (other.scale || 1.0);
             const combinedRadii = unitRadius + otherRadius;
@@ -799,12 +822,14 @@ function clientRenderLoop(time) {
     lastClientTime = time;
     if (dt > 0.5) dt = 0.016; // Cap dt to prevent explosions on lag spikes or initialization
     
+    const gameDt = dt * activeSettings.gameSpeed;
+    
     if (typeof pendingQueue !== 'undefined' && pendingQueue.length > 0) {
         pendingQueue = pendingQueue.filter(p => Date.now() - p.timestamp < 5000);
     }
     simState.players.forEach(p => { 
-        if (p._visualTimer > 0) p._visualTimer = Math.max(0, p._visualTimer - dt);
-        if (p.specialCooldown > 0) p.specialCooldown = Math.max(0, p.specialCooldown - dt);
+        if (p._visualTimer > 0) p._visualTimer = Math.max(0, p._visualTimer - gameDt);
+        if (p.specialCooldown > 0) p.specialCooldown = Math.max(0, p.specialCooldown - gameDt);
     });
 
     // Run Client Prediction

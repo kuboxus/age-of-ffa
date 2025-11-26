@@ -181,6 +181,9 @@ const FirebaseAdapter = {
             updateLobbyUI(data);
 
             if(data.status === 'playing' || data.status === 'paused') {
+                // Update settings just in case they changed mid-game (though unlikely)
+                if (typeof activeSettings !== 'undefined' && data.settings) activeSettings = data.settings;
+
                 if (gameState === 'waiting') {
                     startGameSimulation(data);
                     gameState = 'playing';
