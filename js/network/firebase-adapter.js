@@ -309,9 +309,12 @@ const FirebaseAdapter = {
                 }
                 
                 // Sync State Transition
-                if (data.status === 'playing' && gameState === 'connecting') {
-                    gameState = 'playing';
-                    // Game officially starts logic?
+                if (data.status === 'paused') {
+                    gameState = 'paused';
+                } else if (data.status === 'playing') {
+                    if (gameState === 'connecting' || gameState === 'paused') {
+                        gameState = 'playing';
+                    }
                 }
                 
                 // Sync Logic (Fallback + P2P Status Update)
