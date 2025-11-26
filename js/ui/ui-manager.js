@@ -190,7 +190,12 @@ function updateUI() {
     }
 }
 
+let lastUnitBuyTime = 0;
 function handleBuyUnit(unitId) {
+    const now = Date.now();
+    if (now - lastUnitBuyTime < 250) return; // Debounce UI clicks
+    lastUnitBuyTime = now;
+
     if(typeof Network !== 'undefined' && Network.sendAction) {
         Network.sendAction({type: 'queueUnit', unitId: unitId});
     }
