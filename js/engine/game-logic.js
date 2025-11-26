@@ -564,7 +564,10 @@ function updateUnit(u, dt) {
         }
 
         // Movement Logic (Decoupled from Attack)
-        if (enemyDist > unitRadius + enemyRadius) {
+        const canAttackMelee = isMeleeRange && u.meleeDmg > 0;
+        const canAttackRanged = isRangedRange;
+
+        if (!canAttackMelee && !canAttackRanged) {
              moveUnit(u, enemy, dt);
         }
 
