@@ -3,13 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Age of War: Multiplayer</title>
+    <title>Age of War: Offline Mode</title>
     
-    <!-- Firebase Imports -->
-    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-app-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-auth-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore-compat.js"></script>
-
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="css/style.css">
@@ -17,17 +12,17 @@
 <body>
 
 <div class="absolute top-2 left-2 z-50">
-    <a href="offline.html" class="text-gray-400 hover:text-white text-xs underline">Play Offline</a>
+    <a href="index.html" class="text-gray-400 hover:text-white text-xs underline">Play Online</a>
 </div>
 
 <!-- === UI LAYOUT === -->
-<div id="lobby-screen" class="screen flex flex-col md:flex-row items-center justify-center relative bg-gradient-to-br from-gray-900 via-purple-900 to-black gap-8 p-4">
+<div id="lobby-screen" class="screen flex flex-col md:flex-row items-center justify-center relative bg-gradient-to-br from-gray-900 via-blue-900 to-black gap-8 p-4">
     <div class="absolute bottom-4 right-4 text-gray-400 text-sm z-10">Build: <span id="version-display"></span></div>
 
     <!-- MAIN MENU PANEL -->
     <div class="glass-panel p-8 rounded-xl max-w-md w-full text-center z-10 shadow-2xl border-2 border-gray-700">
         <h1 class="text-5xl font-bold mb-6 text-yellow-500">Age of War</h1>
-        <div id="auth-status" class="mb-6 text-base text-yellow-500 animate-pulse">Connecting...</div>
+        <div id="auth-status" class="mb-6 text-base text-yellow-500 animate-pulse">Initializing...</div>
 
         <div class="flex flex-col gap-4">
             <input id="lobby-name" type="text" placeholder="Your Name" class="bg-gray-800 border border-gray-600 p-4 rounded text-white text-xl">
@@ -35,11 +30,13 @@
                 <span class="text-lg text-gray-300">Base Color:</span>
                 <input id="player-color" type="color" value="#ff0000" class="flex-1">
             </div>
-            <div class="flex items-center gap-3 justify-center text-gray-400 mb-2 bg-gray-800 p-2 rounded border border-gray-600">
+            <!-- Private Toggle -->
+            <div class="flex items-center gap-3 justify-center text-gray-400 mb-2">
                  <label for="is-private-lobby" class="cursor-pointer text-gray-300 select-none">Private Game</label>
                  <input type="checkbox" id="is-private-lobby" class="toggle-checkbox">
             </div>
-            <button onclick="Network.createLobby()" class="btn-primary w-full py-4 text-xl">Create New Game</button>
+            <button onclick="Network.createLobby()" class="btn-primary w-full py-4 text-xl">Start Offline Game</button>
+            <!-- Hide Join in Offline -->
             <div class="flex gap-2 mt-4">
                 <input id="lobby-id-input" type="text" placeholder="CODE" class="bg-gray-800 border border-gray-600 p-3 rounded flex-1 text-white text-base text-center uppercase tracking-widest">
                 <button onclick="Network.joinLobby()" class="bg-blue-600 hover:bg-blue-500 text-white px-6 rounded font-bold text-lg">Join</button>
@@ -47,16 +44,20 @@
         </div>
     </div>
     
-    <!-- PUBLIC BROWSER PANEL -->
+    <!-- PUBLIC BROWSER PANEL (Hidden or Empty for Offline) -->
     <div class="glass-panel p-6 rounded-xl w-80 h-96 flex flex-col z-10 shadow-2xl border-2 border-gray-700 bg-opacity-80">
-        <h2 class="text-xl font-bold text-gray-300 mb-4 border-b border-gray-600 pb-2">Public Games</h2>
-        <div id="active-lobbies-list" class="flex-1 overflow-y-auto pr-2">
-            <div class="text-gray-500 text-sm text-center mt-10">Loading...</div>
+        <h2 class="text-xl font-bold text-gray-300 mb-4 border-b border-gray-600 pb-2">Offline Mode</h2>
+        <div id="active-lobbies-list" class="flex-1 overflow-y-auto pr-2 flex items-center justify-center">
+            <div class="text-gray-500 text-sm text-center">
+                Single player vs Bots<br/>
+                Zero Latency<br/>
+                No Internet Required
+            </div>
         </div>
     </div>
 </div>
 
-<div id="waiting-room" class="screen hidden w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-gray-900 via-purple-900 to-black p-6 overflow-hidden">
+<div id="waiting-room" class="screen hidden w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-gray-900 via-blue-900 to-black p-6 overflow-hidden">
     <div class="flex flex-col md:flex-row gap-6 w-full max-w-6xl h-full max-h-[800px]">
         
         <!-- LEFT: Player List -->
@@ -74,14 +75,14 @@
                 <button id="add-bot-btn" onclick="Network.addBot()" class="bg-gray-600 hover:bg-gray-500 text-white px-4 py-3 rounded flex-1">Add Bot</button>
                 <button id="start-btn" onclick="Network.setGameStarted()" class="btn-primary flex-1 text-xl">Start Game</button>
             </div>
-            <button onclick="Network.leaveLobby()" class="text-red-500 hover:text-red-400 text-sm underline text-center mt-2">Leave Lobby</button>
+            <button onclick="Network.leaveLobby()" class="text-red-500 hover:text-red-400 text-sm underline text-center mt-2">Exit to Menu</button>
         </div>
 
         <!-- RIGHT: Settings -->
         <div id="settings-panel" class="glass-panel p-6 rounded-xl flex-1 flex-col min-w-[300px] overflow-y-auto flex">
             <div class="flex justify-between items-center mb-4">
                 <h2 class="text-2xl font-bold text-gray-200">Game Settings</h2>
-                <!-- resetSettings was simple logic, can be added to Network or UI, skipping for brevity or assume manual reset -->
+                <!-- In offline, changes apply immediately via Network.updateLobbySettings (which updates local state) -->
                 <button id="reset-btn" onclick="Network.updateLobbySettings()" class="text-xs text-yellow-500 hover:text-yellow-400 underline hidden">Save/Update</button> 
             </div>
 
@@ -167,8 +168,10 @@
 <script src="js/engine/game-logic.js"></script>
 <script src="js/engine/renderer.js"></script>
 <script src="js/ui/ui-manager.js"></script>
-<script src="js/network/firebase-adapter.js"></script>
-<script src="js/main-online.js"></script>
+<!-- Offline Adapter instead of Firebase -->
+<script src="js/network/offline-adapter.js"></script>
+<script src="js/main-offline.js"></script>
 
 </body>
 </html>
+
