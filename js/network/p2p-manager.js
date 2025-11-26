@@ -229,5 +229,10 @@ const P2PManager = {
             if (c.channel && c.channel.readyState === 'open') count++;
         });
         return count;
+    },
+    
+    isConnected: function(targetId) {
+        const ctx = this.connections.get(targetId);
+        return ctx && ctx.channel && ctx.channel.readyState === 'open';
     }
 };

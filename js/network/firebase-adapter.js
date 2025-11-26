@@ -328,8 +328,11 @@ const FirebaseAdapter = {
                     } else if (data.status === 'connecting' || !isConnected) {
                          overlay.classList.remove('hidden');
                          overlay.querySelector('h2').innerText = "Connecting to Host...";
-                         if (data.status === 'connecting') overlay.querySelector('p').innerText = "Waiting for players...";
-                         else overlay.querySelector('p').innerText = "Negotiating P2P connection...";
+                         if (data.status === 'connecting') {
+                             overlay.querySelector('p').innerText = "Waiting for all players to join...";
+                         } else {
+                             overlay.querySelector('p').innerText = "Negotiating P2P connection...";
+                         }
                     } else {
                         overlay.classList.add('hidden');
                     }
