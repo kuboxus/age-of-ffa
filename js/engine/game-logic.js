@@ -610,7 +610,27 @@ function moveUnit(u, targetPlayer, dt) {
         }
     }
 
-    if (canMove) { u.x = nextX; u.y = nextY; }
+    if (canMove) { 
+        // Check collision with bases (Hard Stop)
+        let blockedByBase = false;
+        const myRadius = GAME_DATA.unitCollisionRadius * (u.scale || 1.0);
+        
+        for (let p of simState.players) {
+            if (p.hp > 0 && p.id !== u.ownerId && !isTeammate(p.id, u.ownerId, simState.players)) {
+                const distToBase = dist(nextX, nextY, p.x, p.y);
+                // Hard stop at base edge + unit radius + small buffer
+                if (distToBase < GAME_DATA.baseRadius + myRadius + 2) { 
+                    blockedByBase = true; 
+                    break; 
+                }
+            }
+        }
+
+        if (!blockedByBase) {
+            u.x = nextX; 
+            u.y = nextY; 
+        }
+    }
 }
 
 function updateTurrets(p, dt) {
