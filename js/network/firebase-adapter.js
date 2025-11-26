@@ -387,7 +387,7 @@ const FirebaseAdapter = {
                 }
             }
         });
-        
+
         // Sync Pending Queue (Remove processed requests)
         const me = simState.players.find(p => p.id === localPlayerId);
         if(me && me.spawnQueue) {
