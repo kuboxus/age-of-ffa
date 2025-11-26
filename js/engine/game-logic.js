@@ -624,11 +624,16 @@ function updateUnit(u, dt) {
         // Movement Logic (Decoupled from Attack)
         // Stop if within attack range (for ranged) or collision range (for melee)
         let stopDist = unitRadius + enemyRadius;
-        // For normal ranged behavior, we stop at max range.
-        // However, user wants "move forward while shooting", so we treat them like melee for movement purposes.
-        // if (u.rangedDmg > 0) {
-        //    stopDist = u.rangedRange + unitRadius + enemyRadius - 10; 
-        // }
+        // Host ranged units should "move forward like melee units while shooting" -> Do NOT increase stopDist for range.
+        // But for Clients, we might want normal prediction? 
+        // No, logic should be consistent. If Host units charge, Client prediction must assume charging too.
+        // So we remove the special ranged stop distance.
+        
+        /* 
+        if (u.rangedDmg > 0) {
+            stopDist = u.rangedRange + unitRadius + enemyRadius - 10; 
+        }
+        */
 
         if (enemyDist > stopDist) {
              moveUnit(u, enemy, dt);

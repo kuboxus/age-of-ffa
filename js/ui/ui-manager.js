@@ -191,18 +191,17 @@ function updateUI() {
 }
 
 let lastUnitBuyTime = 0;
+let pendingBuyUnitId = null; // Track pending click to prevent double firing
 function handleBuyUnit(unitId) {
     const now = Date.now();
-    // Increase debounce to 400ms to be absolutely sure
-    if (now - lastUnitBuyTime < 400) return; 
-    lastUnitBuyTime = now;
+    if (now - lastUnitBuyTime < 300) return; // Increased debounce to 300ms
+    
+    // Extra safety: Check if we just fired this same unit ID
+    if (pendingBuyUnitId === unitId && now - lastUnitBuyTime < 500) return;
 
-    // Disable button visually for a split second to give feedback
-    const btn = document.getElementById(`btn-unit-${unitId}`);
-    if (btn) {
-        btn.classList.add('opacity-50');
-        setTimeout(() => btn.classList.remove('opacity-50'), 200);
-    }
+    lastUnitBuyTime = now;
+    pendingBuyUnitId = unitId;
+    setTimeout(() => { pendingBuyUnitId = null; }, 500);
 
     if(typeof Network !== 'undefined' && Network.sendAction) {
         Network.sendAction({type: 'queueUnit', unitId: unitId});
