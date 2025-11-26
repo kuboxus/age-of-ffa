@@ -51,6 +51,11 @@ const FirebaseAdapter = {
             from: localPlayerId,
             data: JSON.stringify(data),
             timestamp: firebase.firestore.FieldValue.serverTimestamp()
+        }).catch(err => {
+            console.error("Signal Send Error:", err);
+            if (err.code === 'permission-denied') {
+                alert("P2P Signaling Failed: Permission Denied. Please update your Firestore Security Rules to allow access to the 'signals' subcollection.");
+            }
         });
     },
 
@@ -94,9 +99,14 @@ const FirebaseAdapter = {
                         else if (payload.type === 'candidate') P2PManager.handleCandidate(msg.from, payload.candidate);
                         
                         // Cleanup signal to keep DB clean
-                        change.doc.ref.delete(); 
+                        change.doc.ref.delete().catch(e => console.warn("Cleanup signal failed", e)); 
                     }
                 });
+            }, error => {
+                console.error("Signal Listener Error:", error);
+                if (error.code === 'permission-denied') {
+                    console.warn("Firestore rules blocked signal listener.");
+                }
             });
     },
 
