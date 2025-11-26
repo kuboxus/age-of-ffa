@@ -374,6 +374,10 @@ const FirebaseAdapter = {
         const now = Date.now();
         const reqId = localPlayerId + '_' + now + '_' + Math.random();
         
+        // Prevent double-submission if user clicks fast
+        if (this._lastActionTime && now - this._lastActionTime < 200) return;
+        this._lastActionTime = now;
+        
         // Immediate local feedback for queueing
         if (data.type === 'queueUnit' && !isHost) {
             const p = simState.players.find(x => x.id === localPlayerId);
@@ -565,6 +569,14 @@ const FirebaseAdapter = {
 
     setGameStarted: async function() {
         if(!isHost) return;
+        
+        // Check if all players are ready or connected? 
+        // For now, we just rely on the host's decision.
+        // But to prevent race conditions, we could optionally wait for connections.
+        // However, P2P connects AFTER game start usually.
+        // Let's ensure P2PManager is reset.
+        P2PManager.connections.clear();
+        
         await this.getLobbyRef().doc(lobbyId).update({ 
             status: 'playing',
             lastHeartbeat: firebase.firestore.FieldValue.serverTimestamp() 
