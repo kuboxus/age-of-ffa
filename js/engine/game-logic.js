@@ -624,10 +624,11 @@ function updateUnit(u, dt) {
         // Movement Logic (Decoupled from Attack)
         // Stop if within attack range (for ranged) or collision range (for melee)
         let stopDist = unitRadius + enemyRadius;
-        if (u.rangedDmg > 0) {
-            // For ranged units, stop at max range (minus buffer to ensure valid hit)
-            stopDist = u.rangedRange + unitRadius + enemyRadius - 10; 
-        }
+        // For normal ranged behavior, we stop at max range.
+        // However, user wants "move forward while shooting", so we treat them like melee for movement purposes.
+        // if (u.rangedDmg > 0) {
+        //    stopDist = u.rangedRange + unitRadius + enemyRadius - 10; 
+        // }
 
         if (enemyDist > stopDist) {
              moveUnit(u, enemy, dt);
