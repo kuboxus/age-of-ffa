@@ -637,13 +637,24 @@ function updateUnit(u, dt) {
              if (enemy.type === 'base') {
                  const d = dist(u.x, u.y, enemy.x, enemy.y);
                  const minSep = enemy.radius + unitRadius; 
+                 // Allow a tiny bit of overlap for melee visuals or stick to edge
                  if (d < minSep) {
-                     // Push back? No, just clamp position?
                      // Simple push back logic:
                      const a = Math.atan2(u.y - enemy.y, u.x - enemy.x);
                      u.x = enemy.x + Math.cos(a) * minSep;
                      u.y = enemy.y + Math.sin(a) * minSep;
                  }
+             } else if (enemyDist > stopDist - 20) {
+                // Chase logic: if enemy moves out of "optimal" range but is still in attack range,
+                // we might want to inch forward? 
+                // Actually, if enemyDist > stopDist, we already move.
+                // The user issue "ranged units dont move closer... when they start shooting"
+                // implies they stop too early.
+                // Current stopDist is (MaxRange - 10). They stop 10px inside range.
+                // If enemy moves 11px away, they are at MaxRange + 1.
+                // Then enemyDist > stopDist is TRUE. They move.
+                // So logic holds. 
+                // Perhaps the issue was the fallback logic clamping them?
              }
         }
 
@@ -652,7 +663,12 @@ function updateUnit(u, dt) {
         // Ensure we don't walk into the base
         const d = dist(u.x, u.y, targetPlayer.x, targetPlayer.y);
         const baseRadius = GAME_DATA.baseRadius;
-        const stopDist = baseRadius + unitRadius + Math.max(u.meleeRange, u.rangedRange) * 0.8; // Stop a bit before max range
+        const meleeRange = u.meleeRange || 0;
+        const rangedRange = u.rangedRange || 0;
+        const maxRange = Math.max(meleeRange, rangedRange);
+        // Stop a bit before max range to ensure we can attack. 
+        // Relaxing buffer to 10px inside max range.
+        const stopDist = baseRadius + unitRadius + maxRange - 10; 
 
         if (d > stopDist) {
             moveUnit(u, targetPlayer, dt);
