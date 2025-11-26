@@ -1,6 +1,51 @@
 // --- Game Logic & Simulation ---
 
+// --- Spatial Hash ---
+class SpatialHash {
+    constructor(cellSize) {
+        this.cellSize = cellSize;
+        this.grid = new Map();
+    }
+
+    key(x, y) {
+        return `${Math.floor(x / this.cellSize)},${Math.floor(y / this.cellSize)}`;
+    }
+
+    clear() {
+        this.grid.clear();
+    }
+
+    insert(unit) {
+        const k = this.key(unit.x, unit.y);
+        if (!this.grid.has(k)) this.grid.set(k, []);
+        this.grid.get(k).push(unit);
+    }
+
+    query(x, y, radius) {
+        const results = [];
+        const minX = Math.floor((x - radius) / this.cellSize);
+        const maxX = Math.floor((x + radius) / this.cellSize);
+        const minY = Math.floor((y - radius) / this.cellSize);
+        const maxY = Math.floor((y + radius) / this.cellSize);
+
+        for (let i = minX; i <= maxX; i++) {
+            for (let j = minY; j <= maxY; j++) {
+                const k = `${i},${j}`;
+                if (this.grid.has(k)) {
+                    const cell = this.grid.get(k);
+                    for (let u of cell) {
+                        results.push(u);
+                    }
+                }
+            }
+        }
+        return results;
+    }
+}
+
 let simState = { players: [], units: [], projectiles: [], effects: [] };
+let spatialHash = new SpatialHash(150); // Cell size 150
+
 // pendingQueue is defined in state.js
 let gameState = null;
 // gameLoopRef is defined in state.js
@@ -141,23 +186,26 @@ function hostGameLoop(time) {
     const MAX_DT = 0.25;
     if (dt > MAX_DT) dt = MAX_DT;
     
-    accumulator += dt;
+    // Only simulate game logic if actually playing
+    if (gameState === 'playing') {
+        accumulator += dt;
 
-    // Safety cap for accumulator to prevent spiral of death
-    if (accumulator > 1.0) accumulator = 1.0;
+        // Safety cap for accumulator to prevent spiral of death
+        if (accumulator > 1.0) accumulator = 1.0;
 
-    while (accumulator >= TICK_RATE) {
-        updateHostLogic(TICK_RATE);
-        accumulator -= TICK_RATE;
+        while (accumulator >= TICK_RATE) {
+            updateHostLogic(TICK_RATE);
+            accumulator -= TICK_RATE;
+        }
+        
+        syncTimer += dt;
+        const rate = (typeof Network !== 'undefined' && Network.syncRate) ? Network.syncRate : 0.8;
+        if (syncTimer > rate) { 
+            hostSyncState(); 
+            syncTimer = 0; 
+        }
     }
     
-    syncTimer += dt;
-    const rate = (typeof Network !== 'undefined' && Network.syncRate) ? Network.syncRate : 0.8;
-    if (syncTimer > rate) { 
-        hostSyncState(); 
-        syncTimer = 0; 
-    }
-
     if (typeof renderGame === 'function') renderGame(0); // 0 dt for interpolation if needed, or just render
     if (typeof updateUI === 'function') updateUI();
     
@@ -166,6 +214,12 @@ function hostGameLoop(time) {
 
 function updateHostLogic(dt) {
     const gameDt = dt * activeSettings.gameSpeed; 
+
+    // Rebuild Spatial Hash
+    spatialHash.clear();
+    simState.units.forEach(u => {
+        if (u.hp > 0) spatialHash.insert(u);
+    });
 
     // Process Actions
     if (typeof Network !== 'undefined' && Network.fetchAndClearActions) {
@@ -465,7 +519,10 @@ function updateUnit(u, dt) {
     let enemy = null, enemyDist = Infinity;
     const acquisitionRange = 300; 
     
-    for (let other of simState.units) {
+    // Use Spatial Hash for nearby units
+    const nearbyUnits = spatialHash.query(u.x, u.y, acquisitionRange + 50);
+
+    for (let other of nearbyUnits) {
         if (other.ownerId !== u.ownerId && !isTeammate(other.ownerId, u.ownerId, simState.players)) {
             // TRUCE LOGIC:
             // If 'other' unit is targeting the SAME player (base) that 'u' is targeting, 
@@ -574,6 +631,20 @@ function updateUnit(u, dt) {
 
         if (enemyDist > stopDist) {
              moveUnit(u, enemy, dt);
+        } else {
+             // Even if we are close enough to attack, ensure we don't visually overlap the base
+             // if enemy is a base.
+             if (enemy.type === 'base') {
+                 const d = dist(u.x, u.y, enemy.x, enemy.y);
+                 const minSep = enemy.radius + unitRadius; 
+                 if (d < minSep) {
+                     // Push back? No, just clamp position?
+                     // Simple push back logic:
+                     const a = Math.atan2(u.y - enemy.y, u.x - enemy.x);
+                     u.x = enemy.x + Math.cos(a) * minSep;
+                     u.y = enemy.y + Math.sin(a) * minSep;
+                 }
+             }
         }
 
     } else {
@@ -596,7 +667,13 @@ function moveUnit(u, targetPlayer, dt) {
     const nextX = u.x + Math.cos(angle) * step;
     const nextY = u.y + Math.sin(angle) * step;
 
-    for (let other of simState.units) {
+    // Use Spatial Hash for collision check (radius ~50 is enough for collision)
+    // But we need to query around the *new* position potentially, or just current.
+    // Since unit moves small amount, querying around current is fine.
+    // Collision check radius: unitRadius + max_other_radius (approx 50-60)
+    const collisionCandidates = spatialHash.query(nextX, nextY, 60);
+
+    for (let other of collisionCandidates) {
         if (other.id !== u.id) {
             const d = dist(nextX, nextY, other.x, other.y);
             const r1 = GAME_DATA.unitCollisionRadius * (u.scale || 1.0);
@@ -793,6 +870,12 @@ let lastClientTime = 0;
 
 function updateClientLogic(dt) {
     const gameDt = dt * activeSettings.gameSpeed;
+
+    // Rebuild Spatial Hash (for client prediction physics)
+    spatialHash.clear();
+    simState.units.forEach(u => {
+        if (u.hp > 0) spatialHash.insert(u);
+    });
 
     // Predict Unit Movement
     simState.units.forEach(u => {
