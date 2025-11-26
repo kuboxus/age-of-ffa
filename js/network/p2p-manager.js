@@ -222,8 +222,12 @@ const P2PManager = {
         return false;
     },
     
-    isConnected: function(targetId) {
-        const ctx = this.connections.get(targetId);
-        return ctx && ctx.channel && ctx.channel.readyState === 'open';
+    // Helper: Count active connections
+    getConnectionCount: function() {
+        let count = 0;
+        this.connections.forEach(c => {
+            if (c.channel && c.channel.readyState === 'open') count++;
+        });
+        return count;
     }
 };

@@ -263,24 +263,55 @@ const FirebaseAdapter = {
 
             updateLobbyUI(data);
 
-            if(data.status === 'playing' || data.status === 'paused') {
+            if(data.status === 'connecting' || data.status === 'playing' || data.status === 'paused') {
                 if (typeof activeSettings !== 'undefined' && data.settings) activeSettings = data.settings;
 
+                // Entering Game Screen from Waiting
                 if (gameState === 'waiting') {
-                    // Game Started!
                     startGameSimulation(data);
-                    gameState = 'playing';
+                    gameState = 'connecting'; // Start in connecting state
                     showScreen('game-screen');
                     if (!canvas) initRenderer();
 
-                    // HOST: Connect to all peers
                     if (isHost) {
                         data.players.forEach(p => {
                             if (p.id !== localPlayerId && !p.isBot) {
                                 P2PManager.connectToPeer(p.id);
                             }
                         });
+                        
+                        // Host Monitoring: Check connection progress
+                        if (!this.connectionMonitorInterval) {
+                            this.connectionMonitorInterval = setInterval(() => {
+                                const humanPlayers = data.players.filter(p => !p.isBot && p.id !== localPlayerId).length;
+                                const connected = P2PManager.getConnectionCount();
+                                
+                                // Force start if everyone connected or 10s timeout (handled elsewhere or manual?)
+                                // Let's auto-start if connected match
+                                if (connected >= humanPlayers) {
+                                    clearInterval(this.connectionMonitorInterval);
+                                    this.connectionMonitorInterval = null;
+                                    // Transition to Playing
+                                    this.getLobbyRef().doc(lobbyId).update({ status: 'playing' });
+                                }
+                            }, 1000);
+                            
+                            // Timeout safety: 10s max wait
+                            setTimeout(() => {
+                                if (this.connectionMonitorInterval) {
+                                    clearInterval(this.connectionMonitorInterval);
+                                    this.connectionMonitorInterval = null;
+                                    this.getLobbyRef().doc(lobbyId).update({ status: 'playing' });
+                                }
+                            }, 10000);
+                        }
                     }
+                }
+                
+                // Sync State Transition
+                if (data.status === 'playing' && gameState === 'connecting') {
+                    gameState = 'playing';
+                    // Game officially starts logic?
                 }
                 
                 // Sync Logic (Fallback + P2P Status Update)
@@ -294,9 +325,26 @@ const FirebaseAdapter = {
                     if (data.status === 'paused') {
                         overlay.classList.remove('hidden');
                         overlay.querySelector('h2').innerText = "Game Paused";
-                    } else if (!isConnected) {
+                    } else if (data.status === 'connecting' || !isConnected) {
                          overlay.classList.remove('hidden');
                          overlay.querySelector('h2').innerText = "Connecting to Host...";
+                         if (data.status === 'connecting') overlay.querySelector('p').innerText = "Waiting for players...";
+                         else overlay.querySelector('p').innerText = "Negotiating P2P connection...";
+                    } else {
+                        overlay.classList.add('hidden');
+                    }
+                } else {
+                    // Host Overlay for Connecting
+                    const overlay = document.getElementById('connection-overlay');
+                    if (data.status === 'connecting') {
+                        overlay.classList.remove('hidden');
+                        const humanPlayers = data.players.filter(p => !p.isBot && p.id !== localPlayerId).length;
+                        const connected = P2PManager.getConnectionCount();
+                        overlay.querySelector('h2').innerText = "Waiting for Players";
+                        overlay.querySelector('p').innerText = `${connected} / ${humanPlayers} connected...`;
+                    } else if (data.status === 'paused') {
+                        overlay.classList.remove('hidden');
+                        overlay.querySelector('h2').innerText = "Game Paused";
                     } else {
                         overlay.classList.add('hidden');
                     }
@@ -377,6 +425,9 @@ const FirebaseAdapter = {
         // Prevent double-submission if user clicks fast
         if (this._lastActionTime && now - this._lastActionTime < 200) return;
         this._lastActionTime = now;
+        
+        // Block actions during connection phase
+        if (gameState === 'connecting') return; 
         
         // Immediate local feedback for queueing
         if (data.type === 'queueUnit' && !isHost) {
@@ -570,15 +621,11 @@ const FirebaseAdapter = {
     setGameStarted: async function() {
         if(!isHost) return;
         
-        // Check if all players are ready or connected? 
-        // For now, we just rely on the host's decision.
-        // But to prevent race conditions, we could optionally wait for connections.
-        // However, P2P connects AFTER game start usually.
-        // Let's ensure P2PManager is reset.
         P2PManager.connections.clear();
         
+        // Start in "connecting" phase
         await this.getLobbyRef().doc(lobbyId).update({ 
-            status: 'playing',
+            status: 'connecting',
             lastHeartbeat: firebase.firestore.FieldValue.serverTimestamp() 
         });
     },
