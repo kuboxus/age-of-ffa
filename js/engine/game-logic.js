@@ -99,14 +99,14 @@ function startGameSimulation(initialData) {
     // Handle visibility change to notify pause state
     document.addEventListener("visibilitychange", () => {
         if (document.hidden) {
-            if (isHost && gameState === 'playing') {
+            if (isHost && (gameState === 'playing' || gameState === 'waiting' || gameState === 'connecting')) {
                 // Notify players of pause
                 if (typeof Network !== 'undefined' && Network.setGamePaused) {
                      Network.setGamePaused(true);
                 }
             }
         } else {
-            if (isHost && gameState === 'playing') {
+            if (isHost && (gameState === 'playing' || gameState === 'paused')) {
                 lastTime = performance.now(); // Reset timer to prevent huge dt jump
                 gameLoopRef = requestAnimationFrame(hostGameLoop);
                 // Notify players of resume
@@ -515,6 +515,7 @@ function updateUnit(u, dt) {
 
     if (enemy) {
         const enemyRadius = enemy.type === 'base' ? GAME_DATA.baseRadius : unitRadius;
+
         const isMeleeRange = enemyDist <= u.meleeRange + unitRadius + enemyRadius;
         const isRangedRange = u.rangedDmg > 0 && enemyDist <= u.rangedRange + unitRadius + enemyRadius;
 
@@ -576,7 +577,15 @@ function updateUnit(u, dt) {
         }
 
     } else {
-        moveUnit(u, targetPlayer, dt);
+        // Fallback movement to target player base
+        // Ensure we don't walk into the base
+        const d = dist(u.x, u.y, targetPlayer.x, targetPlayer.y);
+        const baseRadius = GAME_DATA.baseRadius;
+        const stopDist = baseRadius + unitRadius + Math.max(u.meleeRange, u.rangedRange) * 0.8; // Stop a bit before max range
+
+        if (d > stopDist) {
+            moveUnit(u, targetPlayer, dt);
+        }
     }
 }
 
