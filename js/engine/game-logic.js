@@ -564,10 +564,14 @@ function updateUnit(u, dt) {
         }
 
         // Movement Logic (Decoupled from Attack)
-        const canAttackMelee = isMeleeRange && u.meleeDmg > 0;
-        const canAttackRanged = isRangedRange;
+        // Stop if within attack range (for ranged) or collision range (for melee)
+        let stopDist = unitRadius + enemyRadius;
+        if (u.rangedDmg > 0) {
+            // For ranged units, stop at max range (minus buffer to ensure valid hit)
+            stopDist = u.rangedRange + unitRadius + enemyRadius - 10; 
+        }
 
-        if (!canAttackMelee && !canAttackRanged) {
+        if (enemyDist > stopDist) {
              moveUnit(u, enemy, dt);
         }
 
