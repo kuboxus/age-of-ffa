@@ -45,6 +45,7 @@ const FirebaseAdapter = {
     // Called by P2PManager to send signals via Firebase
     sendSignal: function(targetId, data) {
         if (!lobbyId) return;
+        console.log(`[Firebase] Sending signal to ${targetId}: ${data.type}`);
         this.getLobbyRef().doc(lobbyId).collection('signals').add({
             to: targetId,
             from: localPlayerId,

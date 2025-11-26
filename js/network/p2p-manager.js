@@ -3,11 +3,11 @@
 // Handles connections between Host and Clients to bypass Firebase for game loop data.
 
 const P2PManager = {
-    connections: new Map(), // Map<peerId, { conn: RTCPeerConnection, channel: RTCDataChannel }>
+    connections: new Map(), // Map<peerId, { conn: RTCPeerConnection, channel: RTCDataChannel, candidateQueue: [] }>
     myId: null,
     isHost: false,
-    onDataReceived: null, // Callback for incoming data
-    signalCallback: null, // Callback to send signaling data via Firebase
+    onDataReceived: null,
+    signalCallback: null,
     
     config: {
         iceServers: [
@@ -21,33 +21,41 @@ const P2PManager = {
         this.isHost = isHost;
         this.signalCallback = signalCallback;
         this.onDataReceived = onDataReceived;
+        
+        // Close existing connections on re-init
+        this.connections.forEach(c => c.conn.close());
         this.connections.clear();
+        
         console.log(`[P2P] Init as ${isHost ? 'HOST' : 'CLIENT'} (${myId})`);
     },
 
     // --- Connection Logic ---
 
-    // Host calls this to connect to a new client
     connectToPeer: async function(targetId) {
-        if (this.connections.has(targetId)) return;
+        if (this.connections.has(targetId)) {
+            console.warn(`[P2P] Already connecting/connected to ${targetId}`);
+            return;
+        }
         console.log(`[P2P] Initiating connection to ${targetId}`);
 
         const conn = new RTCPeerConnection(this.config);
-        const channel = conn.createDataChannel("game_updates", { ordered: false, maxRetransmits: 0 }); // UDP-like
+        const channel = conn.createDataChannel("game_updates", { ordered: false, maxRetransmits: 0 }); 
         
         this.setupConnectionHandlers(conn, targetId);
         this.setupChannelHandlers(channel, targetId);
 
-        const context = { conn, channel };
+        const context = { conn, channel, candidateQueue: [] };
         this.connections.set(targetId, context);
 
-        // Create Offer
-        const offer = await conn.createOffer();
-        await conn.setLocalDescription(offer);
-        this.signalCallback(targetId, { type: 'offer', sdp: offer });
+        try {
+            const offer = await conn.createOffer();
+            await conn.setLocalDescription(offer);
+            this.signalCallback(targetId, { type: 'offer', sdp: offer });
+        } catch (err) {
+            console.error("[P2P] Error creating offer:", err);
+        }
     },
 
-    // Client calls this when receiving an offer
     handleOffer: async function(senderId, offerData) {
         console.log(`[P2P] Received offer from ${senderId}`);
         
@@ -56,44 +64,108 @@ const P2PManager = {
             const conn = new RTCPeerConnection(this.config);
             this.setupConnectionHandlers(conn, senderId);
             
-            // Client waits for data channel from Host
             conn.ondatachannel = (e) => {
                 console.log(`[P2P] Received Data Channel from ${senderId}`);
                 this.setupChannelHandlers(e.channel, senderId);
                 if (context) context.channel = e.channel;
             };
             
-            context = { conn, channel: null };
+            context = { conn, channel: null, candidateQueue: [] };
             this.connections.set(senderId, context);
+            
+            // Check for pre-queued candidates
+            this.checkPendingCandidates(senderId, context);
         }
 
-        await context.conn.setRemoteDescription(new RTCSessionDescription(offerData));
-        const answer = await context.conn.createAnswer();
-        await context.conn.setLocalDescription(answer);
-        
-        this.signalCallback(senderId, { type: 'answer', sdp: answer });
+        try {
+            // Need to be in "stable" or "have-local-offer" state usually, but here we are "new" or "have-remote-offer"
+            await context.conn.setRemoteDescription(new RTCSessionDescription(offerData));
+            
+            // Process queued candidates now that remote description is set
+            if (context.candidateQueue.length > 0) {
+                console.log(`[P2P] Processing ${context.candidateQueue.length} queued candidates from ${senderId}`);
+                for (const cand of context.candidateQueue) {
+                    await context.conn.addIceCandidate(new RTCIceCandidate(cand));
+                }
+                context.candidateQueue = [];
+            }
+
+            const answer = await context.conn.createAnswer();
+            await context.conn.setLocalDescription(answer);
+            
+            this.signalCallback(senderId, { type: 'answer', sdp: answer });
+        } catch (err) {
+            console.error("[P2P] Error handling offer:", err);
+        }
     },
 
     handleAnswer: async function(senderId, answerData) {
         console.log(`[P2P] Received answer from ${senderId}`);
         const context = this.connections.get(senderId);
         if (context) {
-            await context.conn.setRemoteDescription(new RTCSessionDescription(answerData));
+            try {
+                await context.conn.setRemoteDescription(new RTCSessionDescription(answerData));
+                
+                // Also process queued candidates if any (though less likely for caller)
+                if (context.candidateQueue && context.candidateQueue.length > 0) {
+                    console.log(`[P2P] Processing ${context.candidateQueue.length} queued candidates from ${senderId}`);
+                    for (const cand of context.candidateQueue) {
+                        await context.conn.addIceCandidate(new RTCIceCandidate(cand));
+                    }
+                    context.candidateQueue = [];
+                }
+            } catch (err) {
+                console.error("[P2P] Error handling answer:", err);
+            }
+        } else {
+            console.warn(`[P2P] Received answer from unknown peer ${senderId}`);
         }
     },
 
     handleCandidate: async function(senderId, candidateData) {
-        const context = this.connections.get(senderId);
-        if (context && context.conn) {
-            try {
-                await context.conn.addIceCandidate(new RTCIceCandidate(candidateData));
-            } catch (e) {
-                console.error("Error adding ice candidate", e);
-            }
+        // If context doesn't exist yet (offer hasn't arrived), we must create a temporary placeholder or wait?
+        // Actually, we can create the context object with null conn? No, we need conn to be created when offer arrives.
+        // Strategy: If no context, create a "pending" context or just store in a separate map?
+        // Easier: Just store in a separate pending map if connection doesn't exist.
+        
+        let context = this.connections.get(senderId);
+        
+        if (!context) {
+            console.log(`[P2P] Queuing candidate from ${senderId} (No connection yet)`);
+            // Create a temporary context placeholder just for queue? 
+            // Or better, `handleOffer` logic handles creation. 
+            // Let's use a static map for "orphaned" candidates?
+            if (!this.pendingCandidates) this.pendingCandidates = new Map();
+            if (!this.pendingCandidates.has(senderId)) this.pendingCandidates.set(senderId, []);
+            this.pendingCandidates.get(senderId).push(candidateData);
+            return;
+        }
+
+        // If connection exists but remote description not set, we queue inside context
+        if (!context.conn.remoteDescription) {
+             console.log(`[P2P] Queuing candidate from ${senderId} (Remote description not set)`);
+             if (!context.candidateQueue) context.candidateQueue = [];
+             context.candidateQueue.push(candidateData);
+             return;
+        }
+
+        try {
+            await context.conn.addIceCandidate(new RTCIceCandidate(candidateData));
+            console.log(`[P2P] Added ICE candidate from ${senderId}`);
+        } catch (e) {
+            console.error("[P2P] Error adding ice candidate", e);
         }
     },
-
-    // --- Handlers ---
+    
+    // Helper to check pending candidates when context is created
+    checkPendingCandidates: async function(senderId, context) {
+        if (this.pendingCandidates && this.pendingCandidates.has(senderId)) {
+            const queue = this.pendingCandidates.get(senderId);
+            console.log(`[P2P] Processing ${queue.length} pre-queued candidates for ${senderId}`);
+            context.candidateQueue = (context.candidateQueue || []).concat(queue);
+            this.pendingCandidates.delete(senderId);
+        }
+    },
 
     setupConnectionHandlers: function(conn, peerId) {
         conn.onicecandidate = (e) => {
@@ -103,21 +175,24 @@ const P2PManager = {
         };
 
         conn.onconnectionstatechange = () => {
-            console.log(`[P2P] Connection with ${peerId}: ${conn.connectionState}`);
-            if (conn.connectionState === 'disconnected' || conn.connectionState === 'failed') {
-                this.connections.delete(peerId);
+            console.log(`[P2P] Connection state with ${peerId}: ${conn.connectionState}`);
+            if (conn.connectionState === 'disconnected' || conn.connectionState === 'failed' || conn.connectionState === 'closed') {
+                // Optional: Try to reconnect?
+                // this.connections.delete(peerId); // Don't delete immediately, maybe temporary?
             }
+        };
+        
+        conn.oniceconnectionstatechange = () => {
+            console.log(`[P2P] ICE state with ${peerId}: ${conn.iceConnectionState}`);
         };
     },
 
     setupChannelHandlers: function(channel, peerId) {
         channel.onopen = () => {
             console.log(`[P2P] Data Channel OPEN with ${peerId}`);
-            // Optional: Send a ping or handshake
         };
         channel.onmessage = (e) => {
             if (this.onDataReceived) {
-                // Handle both string (JSON) and binary (if we optimize later)
                 try {
                     const data = JSON.parse(e.data);
                     this.onDataReceived(peerId, data);
@@ -126,9 +201,8 @@ const P2PManager = {
                 }
             }
         };
+        channel.onerror = (err) => console.error("[P2P] Channel Error:", err);
     },
-
-    // --- Sending Data ---
 
     broadcast: function(data) {
         const msg = JSON.stringify(data);
@@ -153,4 +227,3 @@ const P2PManager = {
         return ctx && ctx.channel && ctx.channel.readyState === 'open';
     }
 };
-
