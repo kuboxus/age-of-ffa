@@ -1,11 +1,12 @@
-// Firebase Network Adapter
+// Firebase Network Adapter with P2P Integration
 
 const FirebaseAdapter = {
     db: null,
     auth: null,
     lobbyUnsub: null,
     browserUnsub: null,
-    syncRate: 1.0, // 1.0s updates (Conserve quota), relying on client prediction
+    signalUnsub: null,
+    syncRate: 0.1, // P2P can handle fast updates (10Hz)
 
     initApp: async function() {
         const firebaseConfig = {
@@ -35,9 +36,70 @@ const FirebaseAdapter = {
     },
 
     getLobbyRef: function() {
-        let appId = 'default-app'; // Could be dynamic if needed
+        let appId = 'default-app'; 
         return this.db.collection('artifacts').doc(appId).collection('public').doc('data').collection('lobbies');
     },
+
+    // --- P2P Signaling ---
+
+    // Called by P2PManager to send signals via Firebase
+    sendSignal: function(targetId, data) {
+        if (!lobbyId) return;
+        this.getLobbyRef().doc(lobbyId).collection('signals').add({
+            to: targetId,
+            from: localPlayerId,
+            data: JSON.stringify(data),
+            timestamp: firebase.firestore.FieldValue.serverTimestamp()
+        });
+    },
+
+    // Called by P2PManager when data is received
+    onP2PData: function(senderId, data) {
+        if (data.type === 'state') {
+            // Received Game State from Host
+            if (!isHost) {
+                this.processGameState(data.payload);
+            }
+        } else if (data.type === 'action') {
+            // Received Action from Client
+            if (isHost) {
+                processAction(data.payload);
+            }
+        }
+    },
+
+    startSignalingListener: function(isHostUser) {
+        if (this.signalUnsub) this.signalUnsub();
+        
+        // Initialize P2P Manager
+        P2PManager.init(
+            localPlayerId, 
+            isHostUser, 
+            (targetId, data) => this.sendSignal(targetId, data), 
+            (senderId, data) => this.onP2PData(senderId, data)
+        );
+
+        // Listen for signals intended for ME
+        this.signalUnsub = this.getLobbyRef().doc(lobbyId).collection('signals')
+            .where('to', '==', localPlayerId)
+            .onSnapshot(snapshot => {
+                snapshot.docChanges().forEach(change => {
+                    if (change.type === 'added') {
+                        const msg = change.doc.data();
+                        const payload = JSON.parse(msg.data);
+                        
+                        if (payload.type === 'offer') P2PManager.handleOffer(msg.from, payload.sdp);
+                        else if (payload.type === 'answer') P2PManager.handleAnswer(msg.from, payload.sdp);
+                        else if (payload.type === 'candidate') P2PManager.handleCandidate(msg.from, payload.candidate);
+                        
+                        // Cleanup signal to keep DB clean
+                        change.doc.ref.delete(); 
+                    }
+                });
+            });
+    },
+
+    // --- Standard Lobby Logic ---
 
     startLobbyBrowser: function() {
         if(this.browserUnsub) this.browserUnsub();
@@ -47,12 +109,10 @@ const FirebaseAdapter = {
             if(!listEl) return;
             listEl.innerHTML = '';
             const activeLobbies = [];
-            const now = Date.now(); // Timestamp check? Firestore timestamp is object.
+            const now = Date.now(); 
             
             snapshot.forEach(doc => {
                 const data = doc.data();
-                // Filter ghost games (older than 10 mins heartbeat)
-                // Note: Firestore timestamp to millis: data.lastHeartbeat.toMillis()
                 let isAlive = true;
                 if (data.lastHeartbeat && data.lastHeartbeat.toMillis) {
                     if (now - data.lastHeartbeat.toMillis() > 10 * 60 * 1000) isAlive = false;
@@ -117,7 +177,7 @@ const FirebaseAdapter = {
             settings: { ...DEFAULT_SETTINGS },
             createdAt: firebase.firestore.FieldValue.serverTimestamp(),
             lastHeartbeat: firebase.firestore.FieldValue.serverTimestamp(),
-            stateJSON: JSON.stringify({ units: [], projectiles: [], effects: [] }),
+            stateJSON: JSON.stringify({ units: [], projectiles: [], effects: [] }), // Placeholder
             actions: []
         });
 
@@ -169,6 +229,11 @@ const FirebaseAdapter = {
         if(this.lobbyUnsub) this.lobbyUnsub();
         let hasSeenSelf = false;
 
+        // Init P2P listener immediately to catch early signals
+        const isHostUser = (typeof isHost !== 'undefined') ? isHost : false; 
+        // Note: isHost might update in the snapshot, but we need listeners active.
+        // We'll re-init inside snapshot if host changes (rare).
+
         this.lobbyUnsub = this.getLobbyRef().doc(id).onSnapshot(doc => {
             if(!doc.exists) { alert("Lobby closed."); location.reload(); return; }
             const data = doc.data();
@@ -177,85 +242,52 @@ const FirebaseAdapter = {
             if (amIIn) hasSeenSelf = true;
             else if (hasSeenSelf) { alert("You have been kicked."); location.reload(); return; }
 
+            const wasHost = isHost;
             isHost = (data.hostId === localPlayerId);
+            
+            // Init P2P logic if just joined or role switched
+            if (!this.signalUnsub || wasHost !== isHost) {
+                this.startSignalingListener(isHost);
+            }
+
             updateLobbyUI(data);
 
             if(data.status === 'playing' || data.status === 'paused') {
-                // Update settings just in case they changed mid-game (though unlikely)
                 if (typeof activeSettings !== 'undefined' && data.settings) activeSettings = data.settings;
 
                 if (gameState === 'waiting') {
+                    // Game Started!
                     startGameSimulation(data);
                     gameState = 'playing';
                     showScreen('game-screen');
-                    // Init renderer if not done
                     if (!canvas) initRenderer();
+
+                    // HOST: Connect to all peers
+                    if (isHost) {
+                        data.players.forEach(p => {
+                            if (p.id !== localPlayerId && !p.isBot) {
+                                P2PManager.connectToPeer(p.id);
+                            }
+                        });
+                    }
                 }
                 
-                // Sync logic
+                // Sync Logic (Fallback + P2P Status Update)
                 if (!isHost) {
-                    document.getElementById('connection-overlay').classList.toggle('hidden', data.status !== 'paused');
-                    if(data.stateJSON) {
-                        const parsed = JSON.parse(data.stateJSON);
-                        
-                        // Sync players
-                        data.players.forEach(serverPlayer => {
-                            const localP = simState.players.find(p => p.id === serverPlayer.id);
-                            if (localP) {
-                                localP.gold = serverPlayer.gold;
-                                localP.xp = serverPlayer.xp;
-                                localP.hp = serverPlayer.hp;
-                                localP.age = serverPlayer.age;
-                                localP.targetId = serverPlayer.targetId;
-                                localP.spawnQueue = serverPlayer.spawnQueue;
-                                localP.specialCooldown = serverPlayer.specialCooldown;
-                                
-                                if (serverPlayer.spawnQueue.length > 0 && Math.abs((localP._visualTimer || 0) - serverPlayer.spawnTimer) > 0.3) {
-                                    localP._visualTimer = serverPlayer.spawnTimer;
-                                }
-                            }
-                        });
-                        if (simState.players.length === 0) simState.players = data.players;
-
-                        // Sync Pending Queue
-                        const me = simState.players.find(p => p.id === localPlayerId);
-                        if(me && me.spawnQueue) {
-                            const sIds = new Set(me.spawnQueue.map(i => i.reqId));
-                            pendingQueue = pendingQueue.filter(p => !sIds.has(p.reqId));
-                        }
-
-                        // simState.projectiles = parsed.projectiles; // Don't overwrite, managed by events and simulation
-                        if (parsed.events) {
-                             parsed.events.forEach(e => processSyncEvent(e));
-                        }
-                        
-                        // Sync Units (Interpolation)
-                        parsed.units.forEach(serverUnit => {
-                            if (renderState.units.has(serverUnit.id)) {
-                                const u = renderState.units.get(serverUnit.id);
-                                // Soft Sync: Update target and status, but only snap position if drift is large
-                                u.targetId = serverUnit.targetId;
-                                u.hp = serverUnit.hp;
-                                u.maxHp = serverUnit.maxHp;
-                                if (serverUnit.scale) u.scale = serverUnit.scale;
-                                
-                                const distSq = (u.x - serverUnit.x)**2 + (u.y - serverUnit.y)**2;
-                                if (distSq > 100 * 100) { // 100px drift threshold
-                                    u.x = serverUnit.x; 
-                                    u.y = serverUnit.y;
-                                }
-                            } else {
-                                renderState.units.set(serverUnit.id, { 
-                                    ...serverUnit, 
-                                    x: serverUnit.x, y: serverUnit.y, 
-                                    // targetX: serverUnit.x, targetY: serverUnit.y, // Not used anymore
-                                    scale: serverUnit.scale || 1.0 
-                                });
-                            }
-                        });
-                        const serverIds = new Set(parsed.units.map(u => u.id));
-                        for (let [id, u] of renderState.units) { if (!serverIds.has(id)) renderState.units.delete(id); }
-                        simState.units = Array.from(renderState.units.values());
+                    // If P2P is working, we don't need Firestore stateJSON
+                    // Use connection overlay to show P2P status instead of just "paused"
+                    const hostId = data.hostId;
+                    const isConnected = P2PManager.isConnected(hostId);
+                    const overlay = document.getElementById('connection-overlay');
+                    
+                    if (data.status === 'paused') {
+                        overlay.classList.remove('hidden');
+                        overlay.querySelector('h2').innerText = "Game Paused";
+                    } else if (!isConnected) {
+                         overlay.classList.remove('hidden');
+                         overlay.querySelector('h2').innerText = "Connecting to Host...";
+                    } else {
+                        overlay.classList.add('hidden');
                     }
                 }
             } else if (data.status === 'finished') {
@@ -265,7 +297,6 @@ const FirebaseAdapter = {
                 }
             } else if (data.status === 'waiting') {
                 if (gameState === 'finished' || gameState === 'playing') {
-                    // Instead of reload, reset local state and go to waiting room
                     gameState = 'waiting';
                     resetSimState();
                     document.getElementById('death-overlay')?.remove();
@@ -276,36 +307,122 @@ const FirebaseAdapter = {
         });
     },
 
+    processGameState: function(parsed) {
+        // Sync players
+        simState.players.forEach(localP => {
+            const serverPlayer = parsed.players.find(p => p.id === localP.id);
+            if (serverPlayer) {
+                localP.gold = serverPlayer.gold;
+                localP.xp = serverPlayer.xp;
+                localP.hp = serverPlayer.hp;
+                localP.age = serverPlayer.age;
+                localP.targetId = serverPlayer.targetId;
+                localP.spawnQueue = serverPlayer.spawnQueue;
+                localP.specialCooldown = serverPlayer.specialCooldown;
+                
+                if (serverPlayer.spawnQueue.length > 0 && Math.abs((localP._visualTimer || 0) - serverPlayer.spawnTimer) > 0.3) {
+                    localP._visualTimer = serverPlayer.spawnTimer;
+                }
+            }
+        });
+
+        // Sync Units
+        const serverIds = new Set();
+        parsed.units.forEach(serverUnit => {
+            serverIds.add(serverUnit.id);
+            if (renderState.units.has(serverUnit.id)) {
+                const u = renderState.units.get(serverUnit.id);
+                u.targetId = serverUnit.targetId;
+                u.hp = serverUnit.hp;
+                u.maxHp = serverUnit.maxHp;
+                if (serverUnit.scale) u.scale = serverUnit.scale;
+                
+                const distSq = (u.x - serverUnit.x)**2 + (u.y - serverUnit.y)**2;
+                if (distSq > 100 * 100) { 
+                    u.x = serverUnit.x; 
+                    u.y = serverUnit.y;
+                }
+            } else {
+                renderState.units.set(serverUnit.id, { 
+                    ...serverUnit, 
+                    x: serverUnit.x, y: serverUnit.y, 
+                    scale: serverUnit.scale || 1.0 
+                });
+            }
+        });
+        for (let [id, u] of renderState.units) { if (!serverIds.has(id)) renderState.units.delete(id); }
+        simState.units = Array.from(renderState.units.values());
+
+        // Sync Events
+        if (parsed.events) {
+            parsed.events.forEach(e => processSyncEvent(e));
+        }
+    },
+
     sendAction: function(data) {
         const now = Date.now();
         const reqId = localPlayerId + '_' + now + '_' + Math.random();
-
-        if (data.type === 'queueUnit') {
-            if (!isHost) {
-                const p = simState.players.find(x => x.id === localPlayerId);
-                const stats = getUnitStats(p.age, data.unitId);
-                const cost = stats.cost * activeSettings.unitCost;
-                if (p && stats && p.gold >= cost) {
-                    pendingQueue.push({ unitId: data.unitId, reqId: reqId, timestamp: now, cost: cost, startTime: now });
-                    updateUI();
-                }
+        
+        // Immediate local feedback for queueing
+        if (data.type === 'queueUnit' && !isHost) {
+            const p = simState.players.find(x => x.id === localPlayerId);
+            const stats = getUnitStats(p.age, data.unitId);
+            const cost = stats.cost * activeSettings.unitCost;
+            if (p && stats && p.gold >= cost) {
+                pendingQueue.push({ unitId: data.unitId, reqId: reqId, timestamp: now, cost: cost, startTime: now });
+                updateUI();
             }
         }
 
         const payload = { ...data, playerId: localPlayerId, reqId: reqId };
+        
         if (isHost) {
-            // Host processes directly if offline or just optimization? 
-            // Original code had host processing local actions via processAction directly 
-            // BUT if using Firebase, better to write to DB to maintain consistent log if we want strict server authoritative 
-            // OR host is authoritative so host applies immediately.
-            // Original: if (isHost) processAction(payload); else write to DB.
             processAction(payload);
         } else {
-            this.getLobbyRef().doc(lobbyId).collection('requests').add({ ...payload, timestamp: firebase.firestore.FieldValue.serverTimestamp() });
+            // Try P2P First
+            if (P2PManager.isConnected(simState.players.find(p => p.id !== localPlayerId && p.isBot === false /* Wait, find host */)?.id)) {
+                 // Find Host ID? 
+                 // We need to know who is host. P2PManager has connections, but we just send to host.
+                 // Actually P2PManager.connections keys are peer IDs.
+                 // The host ID is stored in lobby data but not globally accessible here easily unless we save it.
+                 // Let's find host in players list.
+            }
+            
+            // Simplification: We only connect to Host as client.
+            // So broadcasting (sending to all connected) works if we only have 1 connection (to host).
+            // OR explicitly find host.
+            // For now, just send via P2PManager.send to 'host' if we knew the ID.
+            // Let's use P2PManager.broadcast(payload) for client -> it sends to all connected (only host).
+            
+            // Wait, broadcast sends to ALL. Client only connects to Host. So broadcast is safe.
+            const sent = P2PManager.send(simState.players.find(p => !p.isBot /* and isHost? */).id, { type: 'action', payload });
+            
+            // Actually, we can't rely on simState.players to know who is host easily without flag.
+            // But in `subscribeToLobby`, we saw `data.hostId`. Let's store it globally or on P2PManager.
+            // Hack: Clients only have 1 connection. Just send to that one?
+            // P2PManager.broadcast({ type: 'action', payload });
+            
+            // Better:
+            let hostId = null;
+            // We can't access lobbyData scope here.
+            // But we can iterate connections.
+            for (let [pid, ctx] of P2PManager.connections) {
+                P2PManager.send(pid, { type: 'action', payload });
+            }
+            
+            // If no connections, fallback to Firestore? 
+            // User wants to save bandwidth. If P2P fails, maybe alert?
+            // For robustness, let's fallback if P2P fails.
+            if (P2PManager.connections.size === 0) {
+                 this.getLobbyRef().doc(lobbyId).collection('requests').add({ ...payload, timestamp: firebase.firestore.FieldValue.serverTimestamp() });
+            }
         }
     },
 
     fetchAndClearActions: async function() {
+        // Host uses this. 
+        // If using P2P, actions come via onP2PData -> processAction immediately.
+        // So this is only for Fallback actions from Firestore.
         if (!lobbyId) return [];
         const snap = await this.getLobbyRef().doc(lobbyId).collection('requests').get();
         const actions = [];
@@ -318,11 +435,27 @@ const FirebaseAdapter = {
 
     syncState: function(players, stateJSON) {
         if (!lobbyId) return;
-        this.getLobbyRef().doc(lobbyId).update({ 
-            players: players,
-            stateJSON: stateJSON, 
-            lastHeartbeat: firebase.firestore.FieldValue.serverTimestamp() 
-        });
+        
+        // Parse JSON to object to send via P2P (more efficient than double stringify)
+        // But stateJSON is already string.
+        // Let's send the object directly.
+        const stateObj = JSON.parse(stateJSON);
+        
+        // Send via P2P
+        P2PManager.broadcast({ type: 'state', payload: { ...stateObj, players: players } });
+
+        // Do NOT write to Firestore to save bandwidth!
+        // Only update heartbeat occasionally?
+        // We need to update heartbeat so lobby doesn't die.
+        // Update heartbeat every 10 seconds instead of every frame.
+        const now = Date.now();
+        if (!this.lastHeartbeat || now - this.lastHeartbeat > 10000) {
+            this.lastHeartbeat = now;
+             this.getLobbyRef().doc(lobbyId).update({ 
+                // No stateJSON!
+                lastHeartbeat: firebase.firestore.FieldValue.serverTimestamp() 
+            });
+        }
     },
 
     endGame: function(result) {
@@ -338,10 +471,8 @@ const FirebaseAdapter = {
         if (!doc.exists) return;
         let players = doc.data().players;
         
-        // Reset player stats (keep bots)
         players.forEach(p => {
              const defaultP = createPlayerObj(p.id, p.name, p.isBot, p.color);
-             // Preserve team if TEAMS mode? usually reset is full wipe or keep teams. Let's keep teams/names/color but reset stats.
              p.gold = defaultP.gold;
              p.xp = defaultP.xp;
              p.hp = defaultP.hp;
@@ -353,7 +484,6 @@ const FirebaseAdapter = {
              p.turrets = defaultP.turrets;
         });
 
-        // Reset game state to waiting
         await ref.update({
             status: 'waiting',
             stateJSON: JSON.stringify({ units: [], projectiles: [], effects: [] }),
@@ -441,7 +571,10 @@ const FirebaseAdapter = {
      leaveLobby: async function() {
          if (!lobbyId) return;
          if (this.lobbyUnsub) this.lobbyUnsub();
+         if (this.signalUnsub) this.signalUnsub();
          this.lobbyUnsub = null;
+         this.signalUnsub = null;
+         
          const ref = this.getLobbyRef().doc(lobbyId);
          
          await this.db.runTransaction(async (t) => {
@@ -468,4 +601,3 @@ const FirebaseAdapter = {
 
 // Export as global Network
 window.Network = FirebaseAdapter;
-
