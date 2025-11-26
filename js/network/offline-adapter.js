@@ -226,20 +226,32 @@ const OfflineAdapter = {
                             pendingQueue = pendingQueue.filter(p => !sIds.has(p.reqId));
                         }
 
-                        simState.projectiles = parsed.projectiles;
-                        simState.effects = parsed.effects;
+                        // simState.projectiles = parsed.projectiles; // Don't overwrite
+                        if (parsed.events) {
+                             parsed.events.forEach(e => processSyncEvent(e));
+                        }
                         
                         // Sync Units
                         parsed.units.forEach(serverUnit => {
                             if (renderState.units.has(serverUnit.id)) {
                                 const u = renderState.units.get(serverUnit.id);
-                                u.targetX = serverUnit.x; u.targetY = serverUnit.y; u.hp = serverUnit.hp; u.maxHp = serverUnit.maxHp;
-                                if (serverUnit.scale) u.scale = serverUnit.scale; // Sync scale
+                                // Soft Sync for offline too (though lag is low)
+                                u.targetId = serverUnit.targetId;
+                                u.hp = serverUnit.hp;
+                                u.maxHp = serverUnit.maxHp;
+                                if (serverUnit.scale) u.scale = serverUnit.scale;
+                                
+                                // Offline sync is fast (50ms), so strict snap is fine, but let's consistent logic
+                                const distSq = (u.x - serverUnit.x)**2 + (u.y - serverUnit.y)**2;
+                                if (distSq > 20 * 20) { // Tighter threshold for offline
+                                    u.x = serverUnit.x;
+                                    u.y = serverUnit.y;
+                                }
                             } else {
                                 renderState.units.set(serverUnit.id, { 
                                     ...serverUnit, 
                                     x: serverUnit.x, y: serverUnit.y, 
-                                    targetX: serverUnit.x, targetY: serverUnit.y,
+                                    // targetX: serverUnit.x, targetY: serverUnit.y,
                                     scale: serverUnit.scale || 1.0 
                                 });
                             }

@@ -7,10 +7,12 @@ let gameState = null;
 let lastTime = 0;
 let accumulator = 0;
 let syncTimer = 0;
+let syncEvents = []; // Accumulate effects to send as events
 const TICK_RATE = 1 / 30; 
 
 function resetSimState() {
     simState = { players: [], units: [], projectiles: [], effects: [] };
+    syncEvents = [];
     gameState = 'waiting';
     accumulator = 0;
     syncTimer = 0;
@@ -119,6 +121,7 @@ function startGameSimulation(initialData) {
         lastTime = performance.now();
         gameLoopRef = requestAnimationFrame(hostGameLoop);
     } else {
+        lastClientTime = performance.now();
         gameLoopRef = requestAnimationFrame(clientRenderLoop);
     }
 }
@@ -220,7 +223,7 @@ function updateHostLogic(dt) {
             if (dist(p.x, p.y, t.x, t.y) < GAME_DATA.unitCollisionRadius * (t.scale || 1.0) + 5) {
                 t.hp -= p.damage;
                 hit = true;
-                simState.effects.push({x: t.x, y: t.y, type: 'hit', timer: 0.5});
+                addEffect({x: t.x, y: t.y, type: 'hit', timer: 0.5});
                 if (t.hp <= 0) awardKill(p.ownerId, t);
                 break;
             }
@@ -263,6 +266,19 @@ function endGame(result) {
     }
 }
 
+function addEffect(effect) {
+    simState.effects.push(effect);
+    syncEvents.push(effect);
+}
+
+function processSyncEvent(e) {
+    if (e.type === 'shoot') {
+        simState.projectiles.push(e);
+    } else {
+        simState.effects.push(e);
+    }
+}
+
 function hostSyncState() {
     if(gameState === 'finished') return;
     
@@ -271,11 +287,14 @@ function hostSyncState() {
             id: u.id, ownerId: u.ownerId, typeId: u.typeId, 
             x: Math.round(u.x), y: Math.round(u.y), 
             hp: u.hp, maxHp: u.maxHp, icon: u.icon,
-            scale: u.scale // Sync scale for visual size
+            scale: u.scale, // Sync scale for visual size
+            targetId: u.targetId // Sync target for client prediction
         })),
-        projectiles: simState.projectiles,
-        effects: simState.effects
+        // projectiles: simState.projectiles, // Don't sync projectile list to save bandwidth
+        events: syncEvents // Send new events instead of full effects list
     });
+    
+    syncEvents = []; // Clear after sending
 
     if (typeof Network !== 'undefined' && Network.syncState) {
         Network.syncState(simState.players, stateJSON);
@@ -431,6 +450,7 @@ function updateUnit(u, dt) {
     if(u.cooldownTimer > 0) u.cooldownTimer -= dt * 60;
 
     if (!targetPlayer || targetPlayer.hp <= 0 || isTeammate(u.ownerId, targetPlayer.id, simState.players)) {
+        // ... (Target finding logic) ...
         let close = null, minDist = Infinity;
         simState.players.forEach(p => {
             if (p.id !== u.ownerId && !isTeammate(p.id, u.ownerId, simState.players) && p.hp > 0) {
@@ -443,7 +463,7 @@ function updateUnit(u, dt) {
     }
 
     let enemy = null, enemyDist = Infinity;
-    const acquisitionRange = 300; // Range to divert and attack units
+    const acquisitionRange = 300; 
     
     for (let other of simState.units) {
         if (other.ownerId !== u.ownerId && !isTeammate(other.ownerId, u.ownerId, simState.players)) {
@@ -452,7 +472,6 @@ function updateUnit(u, dt) {
             const combinedRadii = unitRadius + otherRadius;
             const maxRange = Math.max(u.meleeRange, u.rangedRange);
             
-            // Check if in attack range OR acquisition range
             if (d <= Math.max(maxRange + combinedRadii, acquisitionRange) && d < enemyDist) {
                 enemyDist = d;
                 enemy = other;
@@ -478,36 +497,50 @@ function updateUnit(u, dt) {
 
         // Attack Logic
         if (u.cooldownTimer <= 0) {
-            if (isMeleeRange && u.meleeDmg > 0) {
-                if (enemy.type === 'base') {
-                    const p = simState.players.find(pl => pl.id === enemy.id);
-                    if(p) p.hp -= u.meleeDmg;
-                    if (typeof AudioManager !== 'undefined') AudioManager.playSound('hit');
-                } else {
-                    enemy.hp -= u.meleeDmg;
-                    if(enemy.hp <= 0) awardKill(u.ownerId, enemy);
+            if (typeof isHost !== 'undefined' && isHost) { // Only Host deals damage
+                if (isMeleeRange && u.meleeDmg > 0) {
+                    if (enemy.type === 'base') {
+                        const p = simState.players.find(pl => pl.id === enemy.id);
+                        if(p) p.hp -= u.meleeDmg;
+                        if (typeof AudioManager !== 'undefined') AudioManager.playSound('hit');
+                    } else {
+                        enemy.hp -= u.meleeDmg;
+                        if(enemy.hp <= 0) awardKill(u.ownerId, enemy);
+                    }
+                    addEffect({x: enemy.x, y: enemy.y, type: 'hit', timer: 0.2});
+                    u.cooldownTimer = 60; 
+                } else if (isRangedRange) {
+                    const maxRange = u.rangedRange; 
+                    // Create event instead of adding to list directly for sync
+                    addEffect({
+                        type: 'shoot',
+                        x: u.x, y: u.y, 
+                        vx: (enemy.x - u.x) / dist(u.x, u.y, enemy.x, enemy.y),
+                        vy: (enemy.y - u.y) / dist(u.x, u.y, enemy.x, enemy.y),
+                        damage: u.rangedDmg,
+                        ownerId: u.ownerId,
+                        startX: u.x, startY: u.y,
+                        maxDist: maxRange * 1.5
+                    });
+                    
+                    // Also add locally for host simulation
+                    simState.projectiles.push({
+                        x: u.x, y: u.y, 
+                        vx: (enemy.x - u.x) / dist(u.x, u.y, enemy.x, enemy.y),
+                        vy: (enemy.y - u.y) / dist(u.x, u.y, enemy.x, enemy.y),
+                        damage: u.rangedDmg,
+                        ownerId: u.ownerId,
+                        startX: u.x, startY: u.y,
+                        maxDist: maxRange * 1.5
+                    });
+
+                    u.cooldownTimer = 60;
+                    if (typeof AudioManager !== 'undefined') AudioManager.playSound('shoot');
                 }
-                simState.effects.push({x: enemy.x, y: enemy.y, type: 'hit', timer: 0.2});
-                u.cooldownTimer = 60; 
-            } else if (isRangedRange) {
-                const maxRange = u.rangedRange; 
-                simState.projectiles.push({
-                    x: u.x, y: u.y, 
-                    vx: (enemy.x - u.x) / dist(u.x, u.y, enemy.x, enemy.y),
-                    vy: (enemy.y - u.y) / dist(u.x, u.y, enemy.x, enemy.y),
-                    damage: u.rangedDmg,
-                    ownerId: u.ownerId,
-                    startX: u.x, startY: u.y,
-                    maxDist: maxRange * 1.5
-                });
-                u.cooldownTimer = 60;
-                if (typeof AudioManager !== 'undefined') AudioManager.playSound('shoot');
             }
         }
 
         // Movement Logic (Decoupled from Attack)
-        // Move closer if we are not touching (collision radius), allowing units to close the gap while attacking
-        // This applies to both Melee (closing in) and Ranged (chasing/kiting)
         if (enemyDist > unitRadius + enemyRadius) {
              moveUnit(u, enemy, dt);
         }
@@ -560,7 +593,8 @@ function updateTurrets(p, dt) {
             
             if (target) {
                 if (Math.random() < 0.3 && typeof AudioManager !== 'undefined') AudioManager.playSound('shoot');
-                simState.projectiles.push({
+                
+                const projData = {
                     x: p.x, y: p.y,
                     vx: (target.x - p.x) / dist(p.x, p.y, target.x, target.y),
                     vy: (target.y - p.y) / dist(p.x, p.y, target.x, target.y),
@@ -568,7 +602,13 @@ function updateTurrets(p, dt) {
                     ownerId: p.id,
                     startX: p.x, startY: p.y,
                     maxDist: tData.range * 1.5
-                });
+                };
+
+                if (typeof isHost !== 'undefined' && isHost) {
+                    addEffect({ ...projData, type: 'shoot' });
+                    simState.projectiles.push(projData);
+                }
+                
                 t.cooldown = tData.cooldown;
             }
         }
@@ -633,7 +673,7 @@ function useSpecial(playerId, x, y) {
     if (p.specialCooldown > 0) return;
 
     p.specialCooldown = age.special.cooldown;
-    simState.effects.push({x, y, type: 'explosion', radius: age.special.radius, timer: 1.0});
+    addEffect({x, y, type: 'explosion', radius: age.special.radius, timer: 1.0});
     if (typeof AudioManager !== 'undefined') AudioManager.playSound('explosion');
     
     simState.units.forEach(u => {
@@ -692,9 +732,72 @@ function processAction(action) {
 
 let lastClientTime = 0;
 
+function updateClientLogic(dt) {
+    const gameDt = dt * activeSettings.gameSpeed;
+
+    // Predict Unit Movement
+    simState.units.forEach(u => {
+        if (u.hp > 0) {
+            // On client, we use moveUnit to predict position based on targetId
+            // We do NOT deal damage or spawn projectiles here (that's event driven or host only)
+            // But we DO run moveUnit to keep them sliding towards their goal
+            
+            // We need to find the "enemy" or "target" just like host does for movement
+            const targetPlayer = simState.players.find(p => p.id === u.targetId);
+            
+            // Simplified client movement logic:
+            // 1. If we have a targetId (player), move towards it.
+            // 2. If we have a nearby enemy unit, move towards it?
+            // To keep it simple and consistent with Host:
+            // We can actually run `updateUnit` but disable the attack part?
+            // Yes, let's reuse updateUnit but flag it as client? 
+            // I added `isHost` check inside `updateUnit` for attacks.
+            // So we can just call `updateUnit(u, gameDt)`!
+            updateUnit(u, gameDt);
+        }
+    });
+
+    // Simulate Projectiles
+    if (simState.projectiles) { // Safety check
+        simState.projectiles = simState.projectiles.filter(p => {
+            p.x += p.vx * gameDt * 400; p.y += p.vy * gameDt * 400;
+            
+            // Range Check
+            if (p.startX !== undefined && p.maxDist !== undefined) {
+                if (dist(p.startX, p.startY, p.x, p.y) > p.maxDist) return false;
+            }
+
+            let hit = false;
+            
+            // Visual hit detection only
+            const targets = simState.units.filter(u => u.ownerId !== p.ownerId && !isTeammate(u.ownerId, p.ownerId, simState.players));
+            for (let t of targets) {
+                if (dist(p.x, p.y, t.x, t.y) < GAME_DATA.unitCollisionRadius * (t.scale || 1.0) + 5) {
+                    hit = true;
+                    simState.effects.push({x: t.x, y: t.y, type: 'hit', timer: 0.5});
+                    break;
+                }
+            }
+            
+            if (!hit) {
+                simState.players.forEach(pl => {
+                    if (pl.id !== p.ownerId && !isTeammate(pl.id, p.ownerId, simState.players) && pl.hp > 0 && dist(p.x, p.y, pl.x, pl.y) < GAME_DATA.baseRadius) {
+                        hit = true;
+                        // simState.effects.push({x: pl.x, y: pl.y, type: 'hit', timer: 0.5}); // Optional base hit effect
+                    }
+                });
+            }
+            return !hit && Math.abs(p.x) < 2000 && Math.abs(p.y) < 2000; 
+        });
+    }
+
+    simState.effects = simState.effects.filter(e => { e.timer -= gameDt; return e.timer > 0; });
+}
+
 function clientRenderLoop(time) {
-    const dt = (time - lastClientTime) / 1000;
+    let dt = (time - lastClientTime) / 1000;
     lastClientTime = time;
+    if (dt > 0.5) dt = 0.016; // Cap dt to prevent explosions on lag spikes or initialization
     
     if (typeof pendingQueue !== 'undefined' && pendingQueue.length > 0) {
         pendingQueue = pendingQueue.filter(p => Date.now() - p.timestamp < 5000);
@@ -703,6 +806,11 @@ function clientRenderLoop(time) {
         if (p._visualTimer > 0) p._visualTimer = Math.max(0, p._visualTimer - dt);
         if (p.specialCooldown > 0) p.specialCooldown = Math.max(0, p.specialCooldown - dt);
     });
+
+    // Run Client Prediction
+    if (gameState === 'playing') {
+        updateClientLogic(dt);
+    }
 
     if (typeof renderGame === 'function') renderGame(dt);
     if (typeof updateUI === 'function') updateUI();

@@ -100,29 +100,10 @@ function renderGame(dt) {
 
     const unitsToDraw = isHost ? simState.units : Array.from(renderState.units.values());
     unitsToDraw.forEach(u => {
-        if (!isHost) {
-            // Improved Interpolation Logic
-            // Move towards target position using a constant speed or smooth damp
-            const dx = u.targetX - u.x;
-            const dy = u.targetY - u.y;
-            const distToTarget = Math.sqrt(dx*dx + dy*dy);
-            
-            if (distToTarget > 0.1) {
-                // Use a high lerp factor for responsiveness, but cap movement to avoid overshooting if laggy
-                // 0.2 works well for 30fps updates (approx 15-20 updates/sec from server in ideal conditions, but we have 1s sync in online)
-                // For 1s sync rate, we need to rely more on prediction or just accept smoother sliding.
-                // Let's use a fixed move speed based on game speed if possible, or just a smooth lerp.
-                
-                const rate = (typeof Network !== 'undefined' && Network.syncRate) ? Network.syncRate : 0.8;
-                const lerpFactor = rate < 0.1 ? 0.3 : 0.05; // Fast updates = fast lerp, Slow updates = slow lerp
-                
-                u.x += dx * lerpFactor;
-                u.y += dy * lerpFactor;
-                
-                // Snap if close enough
-                if (distToTarget < 2) { u.x = u.targetX; u.y = u.targetY; }
-            }
-        }
+        // On client, u is now updated by updateClientLogic/updateUnit, so we draw it directly.
+        // Server sync updates u.x/u.y periodically to correct drift.
+        // No extra interpolation needed here if simulation is running.
+        
         const p = simState.players.find(pl => pl.id === u.ownerId);
         const color = p ? p.color : '#fff';
         const scale = u.scale || 1.0;

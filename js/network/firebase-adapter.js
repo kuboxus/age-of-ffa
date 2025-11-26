@@ -5,7 +5,7 @@ const FirebaseAdapter = {
     auth: null,
     lobbyUnsub: null,
     browserUnsub: null,
-    syncRate: 1.0, // Seconds between host syncs (Conserve quota)
+    syncRate: 1.0, // 1.0s updates (Conserve quota), relying on client prediction
 
     initApp: async function() {
         const firebaseConfig = {
@@ -221,20 +221,31 @@ const FirebaseAdapter = {
                             pendingQueue = pendingQueue.filter(p => !sIds.has(p.reqId));
                         }
 
-                        simState.projectiles = parsed.projectiles;
-                        simState.effects = parsed.effects;
+                        // simState.projectiles = parsed.projectiles; // Don't overwrite, managed by events and simulation
+                        if (parsed.events) {
+                             parsed.events.forEach(e => processSyncEvent(e));
+                        }
                         
                         // Sync Units (Interpolation)
                         parsed.units.forEach(serverUnit => {
                             if (renderState.units.has(serverUnit.id)) {
                                 const u = renderState.units.get(serverUnit.id);
-                                u.targetX = serverUnit.x; u.targetY = serverUnit.y; u.hp = serverUnit.hp; u.maxHp = serverUnit.maxHp;
-                                if (serverUnit.scale) u.scale = serverUnit.scale; // Sync scale
+                                // Soft Sync: Update target and status, but only snap position if drift is large
+                                u.targetId = serverUnit.targetId;
+                                u.hp = serverUnit.hp;
+                                u.maxHp = serverUnit.maxHp;
+                                if (serverUnit.scale) u.scale = serverUnit.scale;
+                                
+                                const distSq = (u.x - serverUnit.x)**2 + (u.y - serverUnit.y)**2;
+                                if (distSq > 100 * 100) { // 100px drift threshold
+                                    u.x = serverUnit.x; 
+                                    u.y = serverUnit.y;
+                                }
                             } else {
                                 renderState.units.set(serverUnit.id, { 
                                     ...serverUnit, 
                                     x: serverUnit.x, y: serverUnit.y, 
-                                    targetX: serverUnit.x, targetY: serverUnit.y,
+                                    // targetX: serverUnit.x, targetY: serverUnit.y, // Not used anymore
                                     scale: serverUnit.scale || 1.0 
                                 });
                             }
