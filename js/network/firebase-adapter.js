@@ -229,8 +229,14 @@ const FirebaseAdapter = {
                             if (renderState.units.has(serverUnit.id)) {
                                 const u = renderState.units.get(serverUnit.id);
                                 u.targetX = serverUnit.x; u.targetY = serverUnit.y; u.hp = serverUnit.hp; u.maxHp = serverUnit.maxHp;
+                                if (serverUnit.scale) u.scale = serverUnit.scale; // Sync scale
                             } else {
-                                renderState.units.set(serverUnit.id, { ...serverUnit, x: serverUnit.x, y: serverUnit.y, targetX: serverUnit.x, targetY: serverUnit.y });
+                                renderState.units.set(serverUnit.id, { 
+                                    ...serverUnit, 
+                                    x: serverUnit.x, y: serverUnit.y, 
+                                    targetX: serverUnit.x, targetY: serverUnit.y,
+                                    scale: serverUnit.scale || 1.0 
+                                });
                             }
                         });
                         const serverIds = new Set(parsed.units.map(u => u.id));
@@ -406,6 +412,14 @@ const FirebaseAdapter = {
         if(!isHost) return;
         await this.getLobbyRef().doc(lobbyId).update({ 
             status: 'playing',
+            lastHeartbeat: firebase.firestore.FieldValue.serverTimestamp() 
+        });
+    },
+
+    setGamePaused: async function(isPaused) {
+        if(!isHost || !lobbyId) return;
+        await this.getLobbyRef().doc(lobbyId).update({ 
+            status: isPaused ? 'paused' : 'playing',
             lastHeartbeat: firebase.firestore.FieldValue.serverTimestamp() 
         });
     },

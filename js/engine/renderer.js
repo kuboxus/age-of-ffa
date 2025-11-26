@@ -101,30 +101,27 @@ function renderGame(dt) {
     const unitsToDraw = isHost ? simState.units : Array.from(renderState.units.values());
     unitsToDraw.forEach(u => {
         if (!isHost) {
-            // Adaptive interpolation factor based on sync rate
-            let rate = (typeof Network !== 'undefined' && Network.syncRate) ? Network.syncRate : 0.8;
-            // Interpolate towards target. 
-            // If rate is small (0.05s), we want to move fast.
-            // If rate is large (0.8s), we want to move slow.
-            // Let's use a fixed lerp factor that is adjusted by dt/rate.
-            // But simple exponential decay is usually smoothest:
-            // t = 1 - exp(-decay * dt).
-            // We want to cover most of the distance in 'rate' time.
-            // Let's just tune the previous "stiff" factor.
-            // 0.001 was too stiff (0.89 remaining after 1 frame? No, 1 - 0.001^dt is actually very small if base is 0.001... wait)
-            // Math.pow(0.001, dt). If dt=0.016. 0.001^0.016 = 0.895.
-            // t = 1 - 0.895 = 0.105. (10% per frame).
-            // 10% per frame at 60fps covers 99% of distance in ~0.7 seconds.
-            // This matches the 0.8s update rate perfectly!
-            // So for 0.05s update rate, we want to cover distance in 0.05s? 
-            // No, that would be jittery if updates are slightly late.
-            // We want it to look smooth.
-            // Let's just use a slightly faster factor for offline.
-            const base = (rate < 0.1) ? 0.000001 : 0.001; 
-            // 0.000001 ^ 0.016 = 0.80. t = 0.2 (20% per frame). Faster convergence.
-            const t = 1.0 - Math.pow(base, dt); 
-            u.x += (u.targetX - u.x) * t; u.y += (u.targetY - u.y) * t;
-            if (dist(u.x, u.y, u.targetX, u.targetY) > 60) { u.x = u.targetX; u.y = u.targetY; }
+            // Improved Interpolation Logic
+            // Move towards target position using a constant speed or smooth damp
+            const dx = u.targetX - u.x;
+            const dy = u.targetY - u.y;
+            const distToTarget = Math.sqrt(dx*dx + dy*dy);
+            
+            if (distToTarget > 0.1) {
+                // Use a high lerp factor for responsiveness, but cap movement to avoid overshooting if laggy
+                // 0.2 works well for 30fps updates (approx 15-20 updates/sec from server in ideal conditions, but we have 1s sync in online)
+                // For 1s sync rate, we need to rely more on prediction or just accept smoother sliding.
+                // Let's use a fixed move speed based on game speed if possible, or just a smooth lerp.
+                
+                const rate = (typeof Network !== 'undefined' && Network.syncRate) ? Network.syncRate : 0.8;
+                const lerpFactor = rate < 0.1 ? 0.3 : 0.05; // Fast updates = fast lerp, Slow updates = slow lerp
+                
+                u.x += dx * lerpFactor;
+                u.y += dy * lerpFactor;
+                
+                // Snap if close enough
+                if (distToTarget < 2) { u.x = u.targetX; u.y = u.targetY; }
+            }
         }
         const p = simState.players.find(pl => pl.id === u.ownerId);
         const color = p ? p.color : '#fff';

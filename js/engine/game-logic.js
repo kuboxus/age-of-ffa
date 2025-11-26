@@ -94,6 +94,27 @@ function startGameSimulation(initialData) {
         if(p._visualTimer === undefined) p._visualTimer = 0;
     });
 
+    // Handle visibility change to notify pause state
+    document.addEventListener("visibilitychange", () => {
+        if (document.hidden) {
+            if (isHost && gameState === 'playing') {
+                // Notify players of pause
+                if (typeof Network !== 'undefined' && Network.setGamePaused) {
+                     Network.setGamePaused(true);
+                }
+            }
+        } else {
+            if (isHost && gameState === 'playing') {
+                lastTime = performance.now(); // Reset timer to prevent huge dt jump
+                gameLoopRef = requestAnimationFrame(hostGameLoop);
+                // Notify players of resume
+                if (typeof Network !== 'undefined' && Network.setGamePaused) {
+                     Network.setGamePaused(false);
+                }
+            }
+        }
+    });
+
     if (isHost) {
         lastTime = performance.now();
         gameLoopRef = requestAnimationFrame(hostGameLoop);
@@ -104,7 +125,12 @@ function startGameSimulation(initialData) {
 
 function hostGameLoop(time) {
     if (gameState === 'finished') return;
-    if (document.hidden) { lastTime = time; gameLoopRef = requestAnimationFrame(hostGameLoop); return; }
+    if (document.hidden) { 
+        // Ensure lastTime is updated when paused to prevent jumps on resume
+        // But don't update simulation
+        lastTime = performance.now();
+        return; 
+    }
 
     let dt = (time - lastTime) / 1000;
     lastTime = time;
@@ -244,7 +270,8 @@ function hostSyncState() {
         units: simState.units.map(u => ({
             id: u.id, ownerId: u.ownerId, typeId: u.typeId, 
             x: Math.round(u.x), y: Math.round(u.y), 
-            hp: u.hp, maxHp: u.maxHp, icon: u.icon
+            hp: u.hp, maxHp: u.maxHp, icon: u.icon,
+            scale: u.scale // Sync scale for visual size
         })),
         projectiles: simState.projectiles,
         effects: simState.effects
