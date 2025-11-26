@@ -851,7 +851,24 @@ function awardKill(killerId, victimUnit) {
     }
 }
 
+let processedReqIds = new Map(); // Track processed reqIds to prevent duplication
+
 function processAction(action) {
+    if (!action.reqId) return; // Should not happen, but safe
+    
+    // Dedup Logic
+    const now = Date.now();
+    if (processedReqIds.has(action.reqId)) return;
+    
+    processedReqIds.set(action.reqId, now);
+    
+    // Prune old ids (older than 5 seconds)
+    if (processedReqIds.size > 100) {
+        for (let [id, time] of processedReqIds) {
+            if (now - time > 5000) processedReqIds.delete(id);
+        }
+    }
+
     if (action.type === 'queueUnit') {
         const p = simState.players.find(x => x.id === action.playerId);
         if (p && p.hp > 0) {
