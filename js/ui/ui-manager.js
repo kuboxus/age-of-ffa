@@ -193,8 +193,16 @@ function updateUI() {
 let lastUnitBuyTime = 0;
 function handleBuyUnit(unitId) {
     const now = Date.now();
-    if (now - lastUnitBuyTime < 250) return; // Debounce UI clicks
+    // Increase debounce to 400ms to be absolutely sure
+    if (now - lastUnitBuyTime < 400) return; 
     lastUnitBuyTime = now;
+
+    // Disable button visually for a split second to give feedback
+    const btn = document.getElementById(`btn-unit-${unitId}`);
+    if (btn) {
+        btn.classList.add('opacity-50');
+        setTimeout(() => btn.classList.remove('opacity-50'), 200);
+    }
 
     if(typeof Network !== 'undefined' && Network.sendAction) {
         Network.sendAction({type: 'queueUnit', unitId: unitId});
