@@ -387,6 +387,15 @@ const FirebaseAdapter = {
                 }
             }
         });
+        
+        // Sync Pending Queue (Remove processed requests)
+        const me = simState.players.find(p => p.id === localPlayerId);
+        if(me && me.spawnQueue) {
+            const sIds = new Set(me.spawnQueue.map(i => i.reqId));
+            if (typeof pendingQueue !== 'undefined') {
+                pendingQueue = pendingQueue.filter(p => !sIds.has(p.reqId));
+            }
+        }
 
         // Sync Units
         const serverIds = new Set();
