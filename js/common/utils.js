@@ -25,7 +25,7 @@ function createPlayerObj(id, name, isBot, color) {
         isBot: isBot,
         age: 0,
         xp: 0,
-        gold: 300,
+        gold: 175,
         hp: 2500, 
         maxHp: 2500,
         turrets: [], 
@@ -56,4 +56,5 @@ function isTeammate(p1Id, p2Id, players) {
     if (!p1 || !p2) return false;
     return p1.team === p2.team;
 }
+
 
